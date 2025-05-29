@@ -63,7 +63,7 @@ auto transformOptional(std::optional<T> &&O, const Function &F)
 /// Returns underlying integer value of an enum. Backport of C++23
 /// std::to_underlying.
 template <typename Enum>
-[[nodiscard]] constexpr std::underlying_type_t<Enum> to_underlying(Enum E) {
+__attribute__((always_inline)) [[nodiscard]] constexpr std::underlying_type_t<Enum> to_underlying(Enum E) {
   return static_cast<std::underlying_type_t<Enum>>(E);
 }
 

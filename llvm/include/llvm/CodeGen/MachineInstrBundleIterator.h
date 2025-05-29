@@ -129,7 +129,7 @@ private:
   using reverse_iterator = MachineInstrBundleIterator<Ty, !IsReverse>;
 
 public:
-  MachineInstrBundleIterator(instr_iterator MI) : MII(MI) {
+  __attribute__((always_inline)) MachineInstrBundleIterator(instr_iterator MI) : MII(MI) {
     assert((!MI.getNodePtr() || MI.isEnd() || !MI->isBundledWithPred()) &&
            "It's not legal to initialize MachineInstrBundleIterator with a "
            "bundled MI");
@@ -156,7 +156,7 @@ public:
           nullptr)
       : MII(I.getInstrIterator()) {}
 
-  MachineInstrBundleIterator() : MII(nullptr) {}
+  __attribute__((always_inline)) MachineInstrBundleIterator() : MII(nullptr) {}
 
   /// Explicit conversion between forward/reverse iterators.
   ///
@@ -186,7 +186,7 @@ public:
     return L.MII == R.MII;
   }
   friend bool operator==(const MachineInstrBundleIterator &L,
-                         const const_instr_iterator &R) {
+                         __attribute__((always_inline)) const const_instr_iterator &R) {
     return L.MII == R; // Avoid assertion about validity of R.
   }
   friend bool operator==(const const_instr_iterator &L,
@@ -201,7 +201,7 @@ public:
                          const MachineInstrBundleIterator &R) {
     return L == R.MII; // Avoid assertion about validity of L.
   }
-  friend bool operator==(const MachineInstrBundleIterator &L, const_pointer R) {
+  __attribute__((always_inline)) friend bool operator==(const MachineInstrBundleIterator &L, const_pointer R) {
     return L == const_instr_iterator(R); // Avoid assertion about validity of R.
   }
   friend bool operator==(const_pointer L, const MachineInstrBundleIterator &R) {

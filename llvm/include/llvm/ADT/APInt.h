@@ -109,7 +109,7 @@ public:
   /// \param val the initial value of the APInt
   /// \param isSigned how to treat signedness of val
   APInt(unsigned numBits, uint64_t val, bool isSigned = false)
-      : BitWidth(numBits) {
+      __attribute__((always_inline)) : BitWidth(numBits) {
     if (isSingleWord()) {
       U.VAL = val;
       clearUnusedBits();
@@ -150,10 +150,10 @@ public:
   APInt(unsigned numBits, StringRef str, uint8_t radix);
 
   /// Default constructor that creates an APInt with a 1-bit zero value.
-  explicit APInt() { U.VAL = 0; }
+  __attribute__((always_inline)) explicit APInt() { U.VAL = 0; }
 
   /// Copy Constructor.
-  APInt(const APInt &that) : BitWidth(that.BitWidth) {
+  __attribute__((always_inline)) APInt(const APInt &that) : BitWidth(that.BitWidth) {
     if (isSingleWord())
       U.VAL = that.U.VAL;
     else
@@ -161,13 +161,13 @@ public:
   }
 
   /// Move Constructor.
-  APInt(APInt &&that) : BitWidth(that.BitWidth) {
+  __attribute__((always_inline)) APInt(APInt &&that) : BitWidth(that.BitWidth) {
     memcpy(&U, &that.U, sizeof(U));
     that.BitWidth = 0;
   }
 
   /// Destructor.
-  ~APInt() {
+  __attribute__((always_inline)) ~APInt() {
     if (needsCleanup())
       delete[] U.pVal;
   }
@@ -299,7 +299,7 @@ public:
   /// Determine if this APInt just has one word to store value.
   ///
   /// \returns true if the number of bits <= 64, false otherwise.
-  bool isSingleWord() const { return BitWidth <= APINT_BITS_PER_WORD; }
+  __attribute__((always_inline)) bool isSingleWord() const { return BitWidth <= APINT_BITS_PER_WORD; }
 
   /// Determine sign of this APInt.
   ///
@@ -452,7 +452,7 @@ public:
 
   /// If this value is smaller than the specified limit, return it, otherwise
   /// return the limit value.  This causes the value to saturate to the limit.
-  uint64_t getLimitedValue(uint64_t Limit = UINT64_MAX) const {
+  __attribute__((always_inline)) uint64_t getLimitedValue(uint64_t Limit = UINT64_MAX) const {
     return ugt(Limit) ? Limit : getZExtValue();
   }
 
@@ -595,7 +595,7 @@ public:
   /// Copy assignment operator.
   ///
   /// \returns *this after assignment of RHS.
-  APInt &operator=(const APInt &RHS) {
+  __attribute__((always_inline)) APInt &operator=(const APInt &RHS) {
     // The common case (both source or dest being inline) doesn't require
     // allocation or deallocation.
     if (isSingleWord() && RHS.isSingleWord()) {
@@ -665,7 +665,7 @@ public:
   /// Performs a bitwise AND operation on this APInt and RHS. RHS is
   /// logically zero-extended or truncated to match the bit-width of
   /// the LHS.
-  APInt &operator&=(uint64_t RHS) {
+  __attribute__((always_inline)) APInt &operator&=(uint64_t RHS) {
     if (isSingleWord()) {
       U.VAL &= RHS;
       return *this;
@@ -681,7 +681,7 @@ public:
   /// assigned *this;
   ///
   /// \returns *this after ORing with RHS.
-  APInt &operator|=(const APInt &RHS) {
+  __attribute__((always_inline)) APInt &operator|=(const APInt &RHS) {
     assert(BitWidth == RHS.BitWidth && "Bit widths must be the same");
     if (isSingleWord())
       U.VAL |= RHS.U.VAL;
@@ -1046,7 +1046,7 @@ public:
   /// relationship.
   ///
   /// \returns true if *this == Val
-  bool operator==(uint64_t Val) const {
+  __attribute__((always_inline)) bool operator==(uint64_t Val) const {
     return (isSingleWord() || getActiveBits() <= 64) && getZExtValue() == Val;
   }
 
@@ -1072,7 +1072,7 @@ public:
   /// relationship.
   ///
   /// \returns true if *this != Val
-  bool operator!=(uint64_t Val) const { return !((*this) == Val); }
+  __attribute__((always_inline)) bool operator!=(uint64_t Val) const { return !((*this) == Val); }
 
   /// Inequality comparison
   ///
@@ -1096,7 +1096,7 @@ public:
   /// the validity of the less-than relationship.
   ///
   /// \returns true if *this < RHS when considered unsigned.
-  bool ult(uint64_t RHS) const {
+  __attribute__((always_inline)) bool ult(uint64_t RHS) const {
     // Only need to check active bits if not a single word.
     return (isSingleWord() || getActiveBits() <= 64) && getZExtValue() < RHS;
   }
@@ -1167,7 +1167,7 @@ public:
   /// the validity of the greater-than relationship.
   ///
   /// \returns true if *this > RHS when considered unsigned.
-  bool ugt(uint64_t RHS) const {
+  __attribute__((always_inline)) bool ugt(uint64_t RHS) const {
     // Only need to check active bits if not a single word.
     return (!isSingleWord() && getActiveBits() > 64) || getZExtValue() > RHS;
   }
@@ -1234,7 +1234,7 @@ public:
   }
 
   /// This operation checks that all bits set in this APInt are also set in RHS.
-  bool isSubsetOf(const APInt &RHS) const {
+  __attribute__((always_inline)) bool isSubsetOf(const APInt &RHS) const {
     assert(BitWidth == RHS.BitWidth && "Bit widths must be the same");
     if (isSingleWord())
       return (U.VAL & ~RHS.U.VAL) == 0;
@@ -1445,14 +1445,14 @@ public:
   /// @{
 
   /// Return the number of bits in the APInt.
-  unsigned getBitWidth() const { return BitWidth; }
+  __attribute__((always_inline)) unsigned getBitWidth() const { return BitWidth; }
 
   /// Get the number of words.
   ///
   /// Here one word's bitwidth equals to that of uint64_t.
   ///
   /// \returns the number of words to hold the integer value of this APInt.
-  unsigned getNumWords() const { return getNumWords(BitWidth); }
+  __attribute__((always_inline)) unsigned getNumWords() const { return getNumWords(BitWidth); }
 
   /// Get the number of words.
   ///
@@ -1460,7 +1460,7 @@ public:
   ///
   /// \returns the number of words to hold the integer value with a given bit
   /// width.
-  static unsigned getNumWords(unsigned BitWidth) {
+  __attribute__((always_inline)) static unsigned getNumWords(unsigned BitWidth) {
     return ((uint64_t)BitWidth + APINT_BITS_PER_WORD - 1) / APINT_BITS_PER_WORD;
   }
 
@@ -1469,7 +1469,7 @@ public:
   /// This function returns the number of active bits which is defined as the
   /// bit width minus the number of leading zeros. This is used in several
   /// computations to see how "wide" the value is.
-  unsigned getActiveBits() const { return BitWidth - countl_zero(); }
+  __attribute__((always_inline)) unsigned getActiveBits() const { return BitWidth - countl_zero(); }
 
   /// Compute the number of active words in the value of this APInt.
   ///
@@ -1497,7 +1497,7 @@ public:
   /// This method attempts to return the value of this APInt as a zero extended
   /// uint64_t. The bitwidth must be <= 64 or the value must fit within a
   /// uint64_t. Otherwise an assertion will result.
-  uint64_t getZExtValue() const {
+  __attribute__((always_inline)) uint64_t getZExtValue() const {
     if (isSingleWord())
       return U.VAL;
     assert(getActiveBits() <= 64 && "Too many bits for uint64_t");
@@ -1519,7 +1519,7 @@ public:
   /// This method attempts to return the value of this APInt as a sign extended
   /// int64_t. The bit width must be <= 64 or the value must fit within an
   /// int64_t. Otherwise an assertion will result.
-  int64_t getSExtValue() const {
+  __attribute__((always_inline)) int64_t getSExtValue() const {
     if (isSingleWord())
       return SignExtend64(U.VAL, BitWidth);
     assert(getSignificantBits() <= 64 && "Too many bits for int64_t");
@@ -1554,7 +1554,7 @@ public:
   ///
   /// \returns BitWidth if the value is zero, otherwise returns the number of
   ///   zeros from the most significant bit to the first one bits.
-  unsigned countl_zero() const {
+  __attribute__((always_inline)) unsigned countl_zero() const {
     if (isSingleWord()) {
       unsigned unusedBits = APINT_BITS_PER_WORD - BitWidth;
       return llvm::countl_zero(U.VAL) - unusedBits;
@@ -1595,7 +1595,7 @@ public:
   ///
   /// \returns BitWidth if the value is zero, otherwise returns the number of
   /// zeros from the least significant bit to the first one bit.
-  unsigned countr_zero() const {
+  __attribute__((always_inline)) unsigned countr_zero() const {
     if (isSingleWord()) {
       unsigned TrailingZeros = llvm::countr_zero(U.VAL);
       return (TrailingZeros > BitWidth ? BitWidth : TrailingZeros);
@@ -1881,7 +1881,7 @@ public:
   void dump() const;
 
   /// Returns whether this instance allocated memory.
-  bool needsCleanup() const { return !isSingleWord(); }
+  __attribute__((always_inline)) bool needsCleanup() const { return !isSingleWord(); }
 
 private:
   /// This union is used to store the integer value. When the
@@ -1932,7 +1932,7 @@ private:
   /// word that are not used by the APInt. This is needed after the most
   /// significant word is assigned a value to ensure that those bits are
   /// zero'd out.
-  APInt &clearUnusedBits() {
+  __attribute__((always_inline)) APInt &clearUnusedBits() {
     // Compute how many bits are used in the final word.
     unsigned WordBits = ((BitWidth - 1) % APINT_BITS_PER_WORD) + 1;
 
@@ -2057,7 +2057,7 @@ private:
   /// @}
 };
 
-inline bool operator==(uint64_t V1, const APInt &V2) { return V2 == V1; }
+__attribute__((always_inline)) inline bool operator==(uint64_t V1, const APInt &V2) { return V2 == V1; }
 
 inline bool operator!=(uint64_t V1, const APInt &V2) { return V2 != V1; }
 

@@ -39,7 +39,7 @@ public:
   void setPrev(NodeBase *Prev) { PrevAndSentinel.setPointer(Prev); }
   void setNext(NodeBase *Next) { this->Next = Next; }
   NodeBase *getPrev() const { return PrevAndSentinel.getPointer(); }
-  NodeBase *getNext() const { return Next; }
+  __attribute__((always_inline)) NodeBase *getNext() const { return Next; }
 
   bool isSentinel() const { return PrevAndSentinel.getInt(); }
   bool isKnownSentinel() const { return isSentinel(); }

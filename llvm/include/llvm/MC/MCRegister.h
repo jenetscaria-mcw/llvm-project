@@ -64,7 +64,7 @@ public:
 
   /// Return true if the specified register number is in
   /// the physical register namespace.
-  static constexpr bool isPhysicalRegister(unsigned Reg) {
+  __attribute__((always_inline)) static constexpr bool isPhysicalRegister(unsigned Reg) {
     return FirstPhysicalReg <= Reg && Reg < FirstStackSlot;
   }
 

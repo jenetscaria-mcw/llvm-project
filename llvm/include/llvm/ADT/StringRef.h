@@ -89,7 +89,7 @@ namespace llvm {
 #else
                                 std::char_traits<char>::length(Str)
 #endif
-                                : 0) {
+                                __attribute__((always_inline)) : 0) {
     }
 
     /// Construct a string ref from a pointer and length.

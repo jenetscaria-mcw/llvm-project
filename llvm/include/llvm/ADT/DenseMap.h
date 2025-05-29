@@ -42,9 +42,9 @@ template <typename KeyT, typename ValueT>
 struct DenseMapPair : public std::pair<KeyT, ValueT> {
   using std::pair<KeyT, ValueT>::pair;
 
-  KeyT &getFirst() { return std::pair<KeyT, ValueT>::first; }
-  const KeyT &getFirst() const { return std::pair<KeyT, ValueT>::first; }
-  ValueT &getSecond() { return std::pair<KeyT, ValueT>::second; }
+  __attribute__((always_inline)) KeyT &getFirst() { return std::pair<KeyT, ValueT>::first; }
+  __attribute__((always_inline)) const KeyT &getFirst() const { return std::pair<KeyT, ValueT>::first; }
+  __attribute__((always_inline)) ValueT &getSecond() { return std::pair<KeyT, ValueT>::second; }
   const ValueT &getSecond() const { return std::pair<KeyT, ValueT>::second; }
 };
 
@@ -161,7 +161,7 @@ public:
                           *this, true);
     return end();
   }
-  const_iterator find(const_arg_type_t<KeyT> Val) const {
+  __attribute__((always_inline)) const_iterator find(const_arg_type_t<KeyT> Val) const {
     const BucketT *TheBucket;
     if (LookupBucketFor(Val, TheBucket))
       return makeConstIterator(TheBucket,
@@ -369,7 +369,7 @@ public:
     return *InsertIntoBucket(TheBucket, Key);
   }
 
-  ValueT &operator[](const KeyT &Key) {
+  __attribute__((always_inline)) ValueT &operator[](const KeyT &Key) {
     return FindAndConstruct(Key).second;
   }
 
@@ -381,7 +381,7 @@ public:
     return *InsertIntoBucket(TheBucket, std::move(Key));
   }
 
-  ValueT &operator[](KeyT &&Key) {
+  __attribute__((always_inline)) ValueT &operator[](KeyT &&Key) {
     return FindAndConstruct(std::move(Key)).second;
   }
 
@@ -400,7 +400,7 @@ public:
 protected:
   DenseMapBase() = default;
 
-  void destroyAll() {
+  __attribute__((always_inline)) void destroyAll() {
     if (getNumBuckets() == 0) // Nothing to do.
       return;
 
@@ -413,7 +413,7 @@ protected:
     }
   }
 
-  void initEmpty() {
+  __attribute__((always_inline)) void initEmpty() {
     setNumEntries(0);
     setNumTombstones(0);
 
@@ -484,7 +484,7 @@ protected:
       }
   }
 
-  static unsigned getHashValue(const KeyT &Val) {
+  __attribute__((always_inline)) static unsigned getHashValue(const KeyT &Val) {
     return KeyInfoT::getHashValue(Val);
   }
 
@@ -493,13 +493,13 @@ protected:
     return KeyInfoT::getHashValue(Val);
   }
 
-  static const KeyT getEmptyKey() {
+  __attribute__((always_inline)) static const KeyT getEmptyKey() {
     static_assert(std::is_base_of<DenseMapBase, DerivedT>::value,
                   "Must pass the derived type to this template!");
     return KeyInfoT::getEmptyKey();
   }
 
-  static const KeyT getTombstoneKey() {
+  __attribute__((always_inline)) static const KeyT getTombstoneKey() {
     return KeyInfoT::getTombstoneKey();
   }
 
@@ -516,7 +516,7 @@ private:
 
   const_iterator makeConstIterator(const BucketT *P, const BucketT *E,
                                    const DebugEpochBase &Epoch,
-                                   const bool NoAdvance=false) const {
+                                   __attribute__((always_inline)) const bool NoAdvance=false) const {
     if (shouldReverseIterate<KeyT>()) {
       const BucketT *B = P == getBucketsEnd() ? getBuckets() : P + 1;
       return const_iterator(B, E, Epoch, NoAdvance);
@@ -524,15 +524,15 @@ private:
     return const_iterator(P, E, Epoch, NoAdvance);
   }
 
-  unsigned getNumEntries() const {
+  __attribute__((always_inline)) unsigned getNumEntries() const {
     return static_cast<const DerivedT *>(this)->getNumEntries();
   }
 
-  void setNumEntries(unsigned Num) {
+  __attribute__((always_inline)) void setNumEntries(unsigned Num) {
     static_cast<DerivedT *>(this)->setNumEntries(Num);
   }
 
-  void incrementNumEntries() {
+  __attribute__((always_inline)) void incrementNumEntries() {
     setNumEntries(getNumEntries() + 1);
   }
 
@@ -540,11 +540,11 @@ private:
     setNumEntries(getNumEntries() - 1);
   }
 
-  unsigned getNumTombstones() const {
+  __attribute__((always_inline)) unsigned getNumTombstones() const {
     return static_cast<const DerivedT *>(this)->getNumTombstones();
   }
 
-  void setNumTombstones(unsigned Num) {
+  __attribute__((always_inline)) void setNumTombstones(unsigned Num) {
     static_cast<DerivedT *>(this)->setNumTombstones(Num);
   }
 
@@ -552,31 +552,31 @@ private:
     setNumTombstones(getNumTombstones() + 1);
   }
 
-  void decrementNumTombstones() {
+  __attribute__((always_inline)) void decrementNumTombstones() {
     setNumTombstones(getNumTombstones() - 1);
   }
 
-  const BucketT *getBuckets() const {
+  __attribute__((always_inline)) const BucketT *getBuckets() const {
     return static_cast<const DerivedT *>(this)->getBuckets();
   }
 
-  BucketT *getBuckets() {
+  __attribute__((always_inline)) BucketT *getBuckets() {
     return static_cast<DerivedT *>(this)->getBuckets();
   }
 
-  unsigned getNumBuckets() const {
+  __attribute__((always_inline)) unsigned getNumBuckets() const {
     return static_cast<const DerivedT *>(this)->getNumBuckets();
   }
 
-  BucketT *getBucketsEnd() {
+  __attribute__((always_inline)) BucketT *getBucketsEnd() {
     return getBuckets() + getNumBuckets();
   }
 
-  const BucketT *getBucketsEnd() const {
+  __attribute__((always_inline)) const BucketT *getBucketsEnd() const {
     return getBuckets() + getNumBuckets();
   }
 
-  void grow(unsigned AtLeast) {
+  __attribute__((always_inline)) void grow(unsigned AtLeast) {
     static_cast<DerivedT *>(this)->grow(AtLeast);
   }
 
@@ -586,7 +586,7 @@ private:
 
   template <typename KeyArg, typename... ValueArgs>
   BucketT *InsertIntoBucket(BucketT *TheBucket, KeyArg &&Key,
-                            ValueArgs &&... Values) {
+                            __attribute__((always_inline)) ValueArgs &&... Values) {
     TheBucket = InsertIntoBucketImpl(Key, Key, TheBucket);
 
     TheBucket->getFirst() = std::forward<KeyArg>(Key);
@@ -606,7 +606,7 @@ private:
 
   template <typename LookupKeyT>
   BucketT *InsertIntoBucketImpl(const KeyT &Key, const LookupKeyT &Lookup,
-                                BucketT *TheBucket) {
+                                __attribute__((always_inline)) BucketT *TheBucket) {
     incrementEpoch();
 
     // If the load of the hash table is more than 3/4, or if fewer than 1/8 of
@@ -649,7 +649,7 @@ private:
   /// returns false.
   template<typename LookupKeyT>
   bool LookupBucketFor(const LookupKeyT &Val,
-                       const BucketT *&FoundBucket) const {
+                       __attribute__((always_inline)) const BucketT *&FoundBucket) const {
     const BucketT *BucketsPtr = getBuckets();
     const unsigned NumBuckets = getNumBuckets();
 
@@ -699,7 +699,7 @@ private:
   }
 
   template <typename LookupKeyT>
-  bool LookupBucketFor(const LookupKeyT &Val, BucketT *&FoundBucket) {
+  __attribute__((always_inline)) bool LookupBucketFor(const LookupKeyT &Val, BucketT *&FoundBucket) {
     const BucketT *ConstFoundBucket;
     bool Result = const_cast<const DenseMapBase *>(this)
       ->LookupBucketFor(Val, ConstFoundBucket);
@@ -793,7 +793,7 @@ public:
     this->insert(Vals.begin(), Vals.end());
   }
 
-  ~DenseMap() {
+  __attribute__((always_inline)) ~DenseMap() {
     this->destroyAll();
     deallocate_buffer(Buckets, sizeof(BucketT) * NumBuckets, alignof(BucketT));
   }
@@ -880,31 +880,31 @@ public:
   }
 
 private:
-  unsigned getNumEntries() const {
+  __attribute__((always_inline)) unsigned getNumEntries() const {
     return NumEntries;
   }
 
-  void setNumEntries(unsigned Num) {
+  __attribute__((always_inline)) void setNumEntries(unsigned Num) {
     NumEntries = Num;
   }
 
-  unsigned getNumTombstones() const {
+  __attribute__((always_inline)) unsigned getNumTombstones() const {
     return NumTombstones;
   }
 
-  void setNumTombstones(unsigned Num) {
+  __attribute__((always_inline)) void setNumTombstones(unsigned Num) {
     NumTombstones = Num;
   }
 
-  BucketT *getBuckets() const {
+  __attribute__((always_inline)) BucketT *getBuckets() const {
     return Buckets;
   }
 
-  unsigned getNumBuckets() const {
+  __attribute__((always_inline)) unsigned getNumBuckets() const {
     return NumBuckets;
   }
 
-  bool allocateBuckets(unsigned Num) {
+  __attribute__((always_inline)) bool allocateBuckets(unsigned Num) {
     NumBuckets = Num;
     if (NumBuckets == 0) {
       Buckets = nullptr;
@@ -947,7 +947,7 @@ class SmallDenseMap
   AlignedCharArrayUnion<BucketT[InlineBuckets], LargeRep> storage;
 
 public:
-  explicit SmallDenseMap(unsigned NumInitBuckets = 0) {
+  __attribute__((always_inline)) explicit SmallDenseMap(unsigned NumInitBuckets = 0) {
     if (NumInitBuckets > InlineBuckets)
       NumInitBuckets = llvm::bit_ceil(NumInitBuckets);
     init(NumInitBuckets);
@@ -972,7 +972,7 @@ public:
   SmallDenseMap(std::initializer_list<typename BaseT::value_type> Vals)
       : SmallDenseMap(Vals.begin(), Vals.end()) {}
 
-  ~SmallDenseMap() {
+  __attribute__((always_inline)) ~SmallDenseMap() {
     this->destroyAll();
     deallocateBuckets();
   }
@@ -1074,7 +1074,7 @@ public:
     this->BaseT::copyFrom(other);
   }
 
-  void init(unsigned InitBuckets) {
+  __attribute__((always_inline)) void init(unsigned InitBuckets) {
     Small = true;
     if (InitBuckets > InlineBuckets) {
       Small = false;
@@ -1158,25 +1158,25 @@ public:
   }
 
 private:
-  unsigned getNumEntries() const {
+  __attribute__((always_inline)) unsigned getNumEntries() const {
     return NumEntries;
   }
 
-  void setNumEntries(unsigned Num) {
+  __attribute__((always_inline)) void setNumEntries(unsigned Num) {
     // NumEntries is hardcoded to be 31 bits wide.
     assert(Num < (1U << 31) && "Cannot support more than 1<<31 entries");
     NumEntries = Num;
   }
 
-  unsigned getNumTombstones() const {
+  __attribute__((always_inline)) unsigned getNumTombstones() const {
     return NumTombstones;
   }
 
-  void setNumTombstones(unsigned Num) {
+  __attribute__((always_inline)) void setNumTombstones(unsigned Num) {
     NumTombstones = Num;
   }
 
-  const BucketT *getInlineBuckets() const {
+  __attribute__((always_inline)) const BucketT *getInlineBuckets() const {
     assert(Small);
     // Note that this cast does not violate aliasing rules as we assert that
     // the memory's dynamic type is the small, inline bucket buffer, and the
@@ -1189,31 +1189,31 @@ private:
       const_cast<const SmallDenseMap *>(this)->getInlineBuckets());
   }
 
-  const LargeRep *getLargeRep() const {
+  __attribute__((always_inline)) const LargeRep *getLargeRep() const {
     assert(!Small);
     // Note, same rule about aliasing as with getInlineBuckets.
     return reinterpret_cast<const LargeRep *>(&storage);
   }
 
-  LargeRep *getLargeRep() {
+  __attribute__((always_inline)) LargeRep *getLargeRep() {
     return const_cast<LargeRep *>(
       const_cast<const SmallDenseMap *>(this)->getLargeRep());
   }
 
-  const BucketT *getBuckets() const {
+  __attribute__((always_inline)) const BucketT *getBuckets() const {
     return Small ? getInlineBuckets() : getLargeRep()->Buckets;
   }
 
-  BucketT *getBuckets() {
+  __attribute__((always_inline)) BucketT *getBuckets() {
     return const_cast<BucketT *>(
       const_cast<const SmallDenseMap *>(this)->getBuckets());
   }
 
-  unsigned getNumBuckets() const {
+  __attribute__((always_inline)) unsigned getNumBuckets() const {
     return Small ? InlineBuckets : getLargeRep()->NumBuckets;
   }
 
-  void deallocateBuckets() {
+  __attribute__((always_inline)) void deallocateBuckets() {
     if (Small)
       return;
 
@@ -1223,7 +1223,7 @@ private:
     getLargeRep()->~LargeRep();
   }
 
-  LargeRep allocateBuckets(unsigned Num) {
+  __attribute__((always_inline)) LargeRep allocateBuckets(unsigned Num) {
     assert(Num > InlineBuckets && "Must allocate more buckets than are inline");
     LargeRep Rep = {static_cast<BucketT *>(allocate_buffer(
                         sizeof(BucketT) * Num, alignof(BucketT))),
@@ -1254,7 +1254,7 @@ public:
 
   DenseMapIterator(pointer Pos, pointer E, const DebugEpochBase &Epoch,
                    bool NoAdvance = false)
-      : DebugEpochBase::HandleBase(&Epoch), Ptr(Pos), End(E) {
+      __attribute__((always_inline)) : DebugEpochBase::HandleBase(&Epoch), Ptr(Pos), End(E) {
     assert(isHandleInSync() && "invalid construction!");
 
     if (NoAdvance) return;
@@ -1281,7 +1281,7 @@ public:
       return Ptr[-1];
     return *Ptr;
   }
-  pointer operator->() const {
+  __attribute__((always_inline)) pointer operator->() const {
     assert(isHandleInSync() && "invalid iterator access!");
     assert(Ptr != End && "dereferencing end() iterator");
     if (shouldReverseIterate<KeyT>())
@@ -1290,7 +1290,7 @@ public:
   }
 
   friend bool operator==(const DenseMapIterator &LHS,
-                         const DenseMapIterator &RHS) {
+                         __attribute__((always_inline)) const DenseMapIterator &RHS) {
     assert((!LHS.Ptr || LHS.isHandleInSync()) && "handle not in sync!");
     assert((!RHS.Ptr || RHS.isHandleInSync()) && "handle not in sync!");
     assert(LHS.getEpochAddress() == RHS.getEpochAddress() &&
@@ -1321,7 +1321,7 @@ public:
   }
 
 private:
-  void AdvancePastEmptyBuckets() {
+  __attribute__((always_inline)) void AdvancePastEmptyBuckets() {
     assert(Ptr <= End);
     const KeyT Empty = KeyInfoT::getEmptyKey();
     const KeyT Tombstone = KeyInfoT::getTombstoneKey();
@@ -1331,7 +1331,7 @@ private:
       ++Ptr;
   }
 
-  void RetreatPastEmptyBuckets() {
+  __attribute__((always_inline)) void RetreatPastEmptyBuckets() {
     assert(Ptr >= End);
     const KeyT Empty = KeyInfoT::getEmptyKey();
     const KeyT Tombstone = KeyInfoT::getTombstoneKey();

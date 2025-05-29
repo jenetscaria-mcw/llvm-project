@@ -42,7 +42,7 @@ public:
         CoveredClasses(CoveredClasses) {}
 
   /// Get the identifier of this register bank.
-  unsigned getID() const { return ID; }
+  __attribute__((always_inline)) unsigned getID() const { return ID; }
 
   /// Get a user friendly name of this register bank.
   /// Should be used only for debugging purposes.

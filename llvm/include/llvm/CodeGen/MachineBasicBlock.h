@@ -307,8 +307,8 @@ public:
   void setLabelMustBeEmitted() { LabelMustBeEmitted = true; }
 
   /// Return the MachineFunction containing this basic block.
-  const MachineFunction *getParent() const { return xParent; }
-  MachineFunction *getParent() { return xParent; }
+  __attribute__((always_inline)) const MachineFunction *getParent() const { return xParent; }
+  __attribute__((always_inline)) MachineFunction *getParent() { return xParent; }
 
   using instr_iterator = Instructions::iterator;
   using const_instr_iterator = Instructions::const_iterator;
@@ -337,7 +337,7 @@ public:
 
   instr_iterator                instr_begin()       { return Insts.begin();  }
   const_instr_iterator          instr_begin() const { return Insts.begin();  }
-  instr_iterator                  instr_end()       { return Insts.end();    }
+  __attribute__((always_inline)) instr_iterator                  instr_end()       { return Insts.end();    }
   const_instr_iterator            instr_end() const { return Insts.end();    }
   reverse_instr_iterator       instr_rbegin()       { return Insts.rbegin(); }
   const_reverse_instr_iterator instr_rbegin() const { return Insts.rbegin(); }
@@ -353,7 +353,7 @@ public:
 
   iterator                begin()       { return instr_begin();  }
   const_iterator          begin() const { return instr_begin();  }
-  iterator                end  ()       { return instr_end();    }
+  __attribute__((always_inline)) iterator                end  ()       { return instr_end();    }
   const_iterator          end  () const { return instr_end();    }
   reverse_iterator rbegin() {
     return reverse_iterator::getAtBundleBegin(instr_rbegin());

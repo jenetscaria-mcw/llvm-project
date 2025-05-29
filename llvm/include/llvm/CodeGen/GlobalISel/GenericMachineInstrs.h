@@ -35,7 +35,7 @@ public:
 
   /// Access the Idx'th operand as a register and return it.
   /// This assumes that the Idx'th operand is a Register type.
-  Register getReg(unsigned Idx) const { return getOperand(Idx).getReg(); }
+  __attribute__((always_inline)) Register getReg(unsigned Idx) const { return getOperand(Idx).getReg(); }
 
   static bool classof(const MachineInstr *MI) {
     return isPreISelGenericOpcode(MI->getOpcode());
@@ -346,9 +346,9 @@ public:
 /// Represents a G_SELECT.
 class GSelect : public GenericMachineInstr {
 public:
-  Register getCondReg() const { return getReg(1); }
-  Register getTrueReg() const { return getReg(2); }
-  Register getFalseReg() const { return getReg(3); }
+  __attribute__((always_inline)) Register getCondReg() const { return getReg(1); }
+  __attribute__((always_inline)) Register getTrueReg() const { return getReg(2); }
+  __attribute__((always_inline)) Register getFalseReg() const { return getReg(3); }
 
   static bool classof(const MachineInstr *MI) {
     return MI->getOpcode() == TargetOpcode::G_SELECT;
@@ -358,11 +358,11 @@ public:
 /// Represent a G_ICMP or G_FCMP.
 class GAnyCmp : public GenericMachineInstr {
 public:
-  CmpInst::Predicate getCond() const {
+  __attribute__((always_inline)) CmpInst::Predicate getCond() const {
     return static_cast<CmpInst::Predicate>(getOperand(1).getPredicate());
   }
-  Register getLHSReg() const { return getReg(2); }
-  Register getRHSReg() const { return getReg(3); }
+  __attribute__((always_inline)) Register getLHSReg() const { return getReg(2); }
+  __attribute__((always_inline)) Register getRHSReg() const { return getReg(3); }
 
   static bool classof(const MachineInstr *MI) {
     return MI->getOpcode() == TargetOpcode::G_ICMP ||

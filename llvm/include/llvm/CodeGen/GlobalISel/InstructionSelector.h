@@ -16,7 +16,7 @@
 #include "llvm/CodeGen/GlobalISel/GIMatchTableExecutor.h"
 
 namespace llvm {
-class InstructionSelector : public GIMatchTableExecutor {
+__attribute__((always_inline)) class InstructionSelector : public GIMatchTableExecutor {
 public:
   virtual ~InstructionSelector();
 

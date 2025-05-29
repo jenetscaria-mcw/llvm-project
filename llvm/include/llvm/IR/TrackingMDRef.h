@@ -26,7 +26,7 @@ class TrackingMDRef {
   Metadata *MD = nullptr;
 
 public:
-  TrackingMDRef() = default;
+  __attribute__((always_inline)) TrackingMDRef() = default;
   explicit TrackingMDRef(Metadata *MD) : MD(MD) { track(); }
 
   TrackingMDRef(TrackingMDRef &&X) : MD(X.MD) { retrack(X); }
@@ -42,7 +42,7 @@ public:
     return *this;
   }
 
-  TrackingMDRef &operator=(const TrackingMDRef &X) {
+  __attribute__((always_inline)) TrackingMDRef &operator=(const TrackingMDRef &X) {
     if (&X == this)
       return *this;
 
@@ -52,7 +52,7 @@ public:
     return *this;
   }
 
-  ~TrackingMDRef() { untrack(); }
+  __attribute__((always_inline)) ~TrackingMDRef() { untrack(); }
 
   Metadata *get() const { return MD; }
   operator Metadata *() const { return get(); }
@@ -80,12 +80,12 @@ public:
   bool operator!=(const TrackingMDRef &X) const { return MD != X.MD; }
 
 private:
-  void track() {
+  __attribute__((always_inline)) void track() {
     if (MD)
       MetadataTracking::track(MD);
   }
 
-  void untrack() {
+  __attribute__((always_inline)) void untrack() {
     if (MD)
       MetadataTracking::untrack(MD);
   }
@@ -107,7 +107,7 @@ template <class T> class TypedTrackingMDRef {
   TrackingMDRef Ref;
 
 public:
-  TypedTrackingMDRef() = default;
+  __attribute__((always_inline)) TypedTrackingMDRef() = default;
   explicit TypedTrackingMDRef(T *MD) : Ref(static_cast<Metadata *>(MD)) {}
 
   TypedTrackingMDRef(TypedTrackingMDRef &&X) : Ref(std::move(X.Ref)) {}
@@ -118,7 +118,7 @@ public:
     return *this;
   }
 
-  TypedTrackingMDRef &operator=(const TypedTrackingMDRef &X) {
+  __attribute__((always_inline)) TypedTrackingMDRef &operator=(const TypedTrackingMDRef &X) {
     Ref = X.Ref;
     return *this;
   }

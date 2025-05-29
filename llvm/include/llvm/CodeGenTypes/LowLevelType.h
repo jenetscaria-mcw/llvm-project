@@ -39,7 +39,7 @@ class raw_ostream;
 class LLT {
 public:
   /// Get a low-level scalar or aggregate "bag of bits".
-  static constexpr LLT scalar(unsigned SizeInBits) {
+  __attribute__((always_inline)) static constexpr LLT scalar(unsigned SizeInBits) {
     return LLT{/*isPointer=*/false, /*isVector=*/false, /*isScalar=*/true,
                ElementCount::getFixed(0), SizeInBits,
                /*AddressSpace=*/0};
@@ -134,19 +134,19 @@ public:
   explicit constexpr LLT(bool isPointer, bool isVector, bool isScalar,
                          ElementCount EC, uint64_t SizeInBits,
                          unsigned AddressSpace)
-      : LLT() {
+      __attribute__((always_inline)) : LLT() {
     init(isPointer, isVector, isScalar, EC, SizeInBits, AddressSpace);
   }
   explicit constexpr LLT()
-      : IsScalar(false), IsPointer(false), IsVector(false), RawData(0) {}
+      __attribute__((always_inline)) : IsScalar(false), IsPointer(false), IsVector(false), RawData(0) {}
 
   explicit LLT(MVT VT);
 
-  constexpr bool isValid() const { return IsScalar || RawData != 0; }
-  constexpr bool isScalar() const { return IsScalar; }
+  __attribute__((always_inline)) constexpr bool isValid() const { return IsScalar || RawData != 0; }
+  __attribute__((always_inline)) constexpr bool isScalar() const { return IsScalar; }
   constexpr bool isToken() const { return IsScalar && RawData == 0; };
   constexpr bool isVector() const { return isValid() && IsVector; }
-  constexpr bool isPointer() const {
+  __attribute__((always_inline)) constexpr bool isPointer() const {
     return isValid() && IsPointer && !IsVector;
   }
   constexpr bool isPointerVector() const { return IsPointer && isVector(); }
@@ -167,7 +167,7 @@ public:
 
   /// Returns true if the LLT is a scalable vector. Must only be called on
   /// vector types.
-  constexpr bool isScalable() const {
+  __attribute__((always_inline)) constexpr bool isScalable() const {
     assert(isVector() && "Expected a vector type");
     return IsPointer ? getFieldValue(PointerVectorScalableFieldInfo)
                      : getFieldValue(VectorScalableFieldInfo);
@@ -181,7 +181,7 @@ public:
   /// even if the LLT is not a vector type.
   constexpr bool isScalableVector() const { return isVector() && isScalable(); }
 
-  constexpr ElementCount getElementCount() const {
+  __attribute__((always_inline)) constexpr ElementCount getElementCount() const {
     assert(IsVector && "cannot get number of elements on scalar/aggregate");
     return ElementCount::get(IsPointer
                                  ? getFieldValue(PointerVectorElementsFieldInfo)
@@ -190,7 +190,7 @@ public:
   }
 
   /// Returns the total size of the type. Must only be called on sized types.
-  constexpr TypeSize getSizeInBits() const {
+  __attribute__((always_inline)) constexpr TypeSize getSizeInBits() const {
     if (isPointer() || isScalar())
       return TypeSize::getFixed(getScalarSizeInBits());
     auto EC = getElementCount();
@@ -200,7 +200,7 @@ public:
 
   /// Returns the total size of the type in bytes, i.e. number of whole bytes
   /// needed to represent the size in bits. Must only be called on sized types.
-  constexpr TypeSize getSizeInBytes() const {
+  __attribute__((always_inline)) constexpr TypeSize getSizeInBytes() const {
     TypeSize BaseSize = getSizeInBits();
     return {(BaseSize.getKnownMinValue() + 7) / 8, BaseSize.isScalable()};
   }
@@ -264,7 +264,7 @@ public:
     return getSizeInBits().isKnownMultipleOf(8);
   }
 
-  constexpr unsigned getScalarSizeInBits() const {
+  __attribute__((always_inline)) constexpr unsigned getScalarSizeInBits() const {
     if (IsScalar)
       return getFieldValue(ScalarSizeFieldInfo);
     if (IsVector) {
@@ -277,7 +277,7 @@ public:
     return getFieldValue(PointerSizeFieldInfo);
   }
 
-  constexpr unsigned getAddressSpace() const {
+  __attribute__((always_inline)) constexpr unsigned getAddressSpace() const {
     assert(RawData != 0 && "Invalid Type");
     assert(IsPointer && "cannot get address space of non-pointer type");
     if (!IsVector)
@@ -301,12 +301,12 @@ public:
   LLVM_DUMP_METHOD void dump() const;
 #endif
 
-  constexpr bool operator==(const LLT &RHS) const {
+  __attribute__((always_inline)) constexpr bool operator==(const LLT &RHS) const {
     return IsPointer == RHS.IsPointer && IsVector == RHS.IsVector &&
            IsScalar == RHS.IsScalar && RHS.RawData == RawData;
   }
 
-  constexpr bool operator!=(const LLT &RHS) const { return !(*this == RHS); }
+  __attribute__((always_inline)) constexpr bool operator!=(const LLT &RHS) const { return !(*this == RHS); }
 
   friend struct DenseMapInfo<LLT>;
   friend class GISelInstProfileBuilder;
@@ -396,27 +396,27 @@ private:
   uint64_t IsVector : 1;
   uint64_t RawData : 61;
 
-  static constexpr uint64_t getMask(const BitFieldInfo FieldInfo) {
+  __attribute__((always_inline)) static constexpr uint64_t getMask(const BitFieldInfo FieldInfo) {
     const int FieldSizeInBits = FieldInfo[0];
     return (((uint64_t)1) << FieldSizeInBits) - 1;
   }
   static constexpr uint64_t maskAndShift(uint64_t Val, uint64_t Mask,
-                                         uint8_t Shift) {
+                                         __attribute__((always_inline)) uint8_t Shift) {
     assert(Val <= Mask && "Value too large for field");
     return (Val & Mask) << Shift;
   }
   static constexpr uint64_t maskAndShift(uint64_t Val,
-                                         const BitFieldInfo FieldInfo) {
+                                         __attribute__((always_inline)) const BitFieldInfo FieldInfo) {
     return maskAndShift(Val, getMask(FieldInfo), FieldInfo[1]);
   }
 
-  constexpr uint64_t getFieldValue(const BitFieldInfo FieldInfo) const {
+  __attribute__((always_inline)) constexpr uint64_t getFieldValue(const BitFieldInfo FieldInfo) const {
     return getMask(FieldInfo) & (RawData >> FieldInfo[1]);
   }
 
   constexpr void init(bool IsPointer, bool IsVector, bool IsScalar,
                       ElementCount EC, uint64_t SizeInBits,
-                      unsigned AddressSpace) {
+                      __attribute__((always_inline)) unsigned AddressSpace) {
     assert(SizeInBits <= std::numeric_limits<unsigned>::max() &&
            "Not enough bits in LLT to represent size");
     this->IsPointer = IsPointer;
@@ -447,7 +447,7 @@ private:
   }
 
 public:
-  constexpr uint64_t getUniqueRAWLLTData() const {
+  __attribute__((always_inline)) constexpr uint64_t getUniqueRAWLLTData() const {
     return ((uint64_t)RawData) << 3 | ((uint64_t)IsScalar) << 2 |
            ((uint64_t)IsPointer) << 1 | ((uint64_t)IsVector);
   }
@@ -473,7 +473,7 @@ template<> struct DenseMapInfo<LLT> {
     uint64_t Val = Ty.getUniqueRAWLLTData();
     return DenseMapInfo<uint64_t>::getHashValue(Val);
   }
-  static bool isEqual(const LLT &LHS, const LLT &RHS) {
+  __attribute__((always_inline)) static bool isEqual(const LLT &LHS, const LLT &RHS) {
     return LHS == RHS;
   }
 };

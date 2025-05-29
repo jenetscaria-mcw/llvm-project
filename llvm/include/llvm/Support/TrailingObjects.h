@@ -143,7 +143,7 @@ protected:
   // this recursion, and thus, contains all the overloads.
   static const NextTy *
   getTrailingObjectsImpl(const BaseTy *Obj,
-                         TrailingObjectsBase::OverloadToken<NextTy>) {
+                         __attribute__((always_inline)) TrailingObjectsBase::OverloadToken<NextTy>) {
     auto *Ptr = TopTrailingObj::getTrailingObjectsImpl(
                     Obj, TrailingObjectsBase::OverloadToken<PrevTy>()) +
                 TopTrailingObj::callNumTrailingObjects(
@@ -232,14 +232,14 @@ class TrailingObjects : private trailing_objects_internal::TrailingObjectsImpl<
   // static_assert must be in a function, and not at class-level
   // because BaseTy isn't complete at class instantiation time, but
   // will be by the time this function is instantiated.
-  static void verifyTrailingObjectsAssertions() {
+  __attribute__((always_inline)) static void verifyTrailingObjectsAssertions() {
     static_assert(std::is_final<BaseTy>(), "BaseTy must be final.");
   }
 
   // These two methods are the base of the recursion for this method.
   static const BaseTy *
   getTrailingObjectsImpl(const BaseTy *Obj,
-                         TrailingObjectsBase::OverloadToken<BaseTy>) {
+                         __attribute__((always_inline)) TrailingObjectsBase::OverloadToken<BaseTy>) {
     return Obj;
   }
 
@@ -258,13 +258,13 @@ class TrailingObjects : private trailing_objects_internal::TrailingObjectsImpl<
   // numTrailingObjects function.)
   static size_t
   callNumTrailingObjects(const BaseTy *Obj,
-                         TrailingObjectsBase::OverloadToken<BaseTy>) {
+                         __attribute__((always_inline)) TrailingObjectsBase::OverloadToken<BaseTy>) {
     return 1;
   }
 
   template <typename T>
   static size_t callNumTrailingObjects(const BaseTy *Obj,
-                                       TrailingObjectsBase::OverloadToken<T>) {
+                                       __attribute__((always_inline)) TrailingObjectsBase::OverloadToken<T>) {
     return Obj->numTrailingObjects(TrailingObjectsBase::OverloadToken<T>());
   }
 
@@ -282,7 +282,7 @@ public:
   /// Returns a pointer to the trailing object array of the given type
   /// (which must be one of those specified in the class template). The
   /// array may have zero or more elements in it.
-  template <typename T> const T *getTrailingObjects() const {
+  __attribute__((always_inline)) template <typename T> const T *getTrailingObjects() const {
     verifyTrailingObjectsAssertions();
     // Forwards to an impl function with overloads, since member
     // function templates can't be specialized.

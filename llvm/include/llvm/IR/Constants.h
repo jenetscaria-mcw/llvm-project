@@ -158,7 +158,7 @@ public:
   /// extended as appropriate for the type of this constant. Note that
   /// this method can assert if the value does not fit in 64 bits.
   /// Return the sign extended value.
-  inline int64_t getSExtValue() const { return Val.getSExtValue(); }
+  __attribute__((always_inline)) inline int64_t getSExtValue() const { return Val.getSExtValue(); }
 
   /// Return the constant as an llvm::MaybeAlign.
   /// Note that this method can assert if the value does not fit in 64 bits or
@@ -178,7 +178,7 @@ public:
   /// within is equal to a constant.  This only works for very small values,
   /// because this is all that can be represented with all types.
   /// Determine if this constant's value is same as an unsigned char.
-  bool equalsInt(uint64_t V) const { return Val == V; }
+  __attribute__((always_inline)) bool equalsInt(uint64_t V) const { return Val == V; }
 
   /// Variant of the getType() method to always return an IntegerType, which
   /// reduces the amount of casting needed in parts of the compiler.
@@ -309,7 +309,7 @@ public:
 
   /// Return true if Ty is big enough to represent V.
   static bool isValueValidForType(Type *Ty, const APFloat &V);
-  inline const APFloat &getValueAPF() const { return Val; }
+  __attribute__((always_inline)) inline const APFloat &getValueAPF() const { return Val; }
   inline const APFloat &getValue() const { return Val; }
 
   /// Return true if the value is positive or negative zero.

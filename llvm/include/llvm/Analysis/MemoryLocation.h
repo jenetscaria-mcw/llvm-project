@@ -85,10 +85,10 @@ class LocationSize {
   // public LocationSize ctor goes away.
   enum DirectConstruction { Direct };
 
-  constexpr LocationSize(uint64_t Raw, DirectConstruction) : Value(Raw) {}
+  __attribute__((always_inline)) constexpr LocationSize(uint64_t Raw, DirectConstruction) : Value(Raw) {}
   constexpr LocationSize(uint64_t Raw, bool Scalable)
       : Value(Raw > MaxValue ? AfterPointer
-                             : Raw | (Scalable ? ScalableBit : uint64_t(0))) {}
+                             __attribute__((always_inline)) : Raw | (Scalable ? ScalableBit : uint64_t(0))) {}
 
   static_assert(AfterPointer & ImpreciseBit,
                 "AfterPointer is imprecise by definition.");
@@ -104,12 +104,12 @@ public:
   // Since the overwhelming majority of users of this provide precise values,
   // this assumes the provided value is precise.
   constexpr LocationSize(uint64_t Raw)
-      : Value(Raw > MaxValue ? AfterPointer : Raw) {}
+      __attribute__((always_inline)) : Value(Raw > MaxValue ? AfterPointer : Raw) {}
   // Create non-scalable LocationSize
-  static LocationSize precise(uint64_t Value) {
+  __attribute__((always_inline)) static LocationSize precise(uint64_t Value) {
     return LocationSize(Value, false /*Scalable*/);
   }
-  static LocationSize precise(TypeSize Value) {
+  __attribute__((always_inline)) static LocationSize precise(TypeSize Value) {
     return LocationSize(Value.getKnownMinValue(), Value.isScalable());
   }
 
@@ -135,7 +135,7 @@ public:
 
   /// Any location before or after the base pointer (but still within the
   /// underlying object).
-  constexpr static LocationSize beforeOrAfterPointer() {
+  __attribute__((always_inline)) constexpr static LocationSize beforeOrAfterPointer() {
     return LocationSize(BeforeOrAfterPointer, Direct);
   }
 
@@ -163,12 +163,12 @@ public:
     return upperBound(std::max(getValue(), Other.getValue()));
   }
 
-  bool hasValue() const {
+  __attribute__((always_inline)) bool hasValue() const {
     return Value != AfterPointer && Value != BeforeOrAfterPointer;
   }
-  bool isScalable() const { return (Value & ScalableBit); }
+  __attribute__((always_inline)) bool isScalable() const { return (Value & ScalableBit); }
 
-  TypeSize getValue() const {
+  __attribute__((always_inline)) TypeSize getValue() const {
     assert(hasValue() && "Getting value from an unknown LocationSize!");
     assert((Value & ~(ImpreciseBit | ScalableBit)) < MaxValue &&
            "Scalable bit of value should be masked");
@@ -187,17 +187,17 @@ public:
   /// Whether accesses before the base pointer are possible.
   bool mayBeBeforePointer() const { return Value == BeforeOrAfterPointer; }
 
-  bool operator==(const LocationSize &Other) const {
+  __attribute__((always_inline)) bool operator==(const LocationSize &Other) const {
     return Value == Other.Value;
   }
 
-  bool operator==(const TypeSize &Other) const {
+  __attribute__((always_inline)) bool operator==(const TypeSize &Other) const {
     return hasValue() && getValue() == Other;
   }
 
-  bool operator!=(const LocationSize &Other) const { return !(*this == Other); }
+  __attribute__((always_inline)) bool operator!=(const LocationSize &Other) const { return !(*this == Other); }
 
-  bool operator!=(const TypeSize &Other) const { return !(*this == Other); }
+  __attribute__((always_inline)) bool operator!=(const TypeSize &Other) const { return !(*this == Other); }
 
   // Ordering operators are not provided, since it's unclear if there's only one
   // reasonable way to compare:

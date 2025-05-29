@@ -49,7 +49,7 @@ template <typename T, typename ToIndexT = identity<unsigned>>
       return storage_[toIndex_(n)];
     }
 
-    typename StorageT::const_reference operator[](IndexT n) const {
+    __attribute__((always_inline)) typename StorageT::const_reference operator[](IndexT n) const {
       assert(toIndex_(n) < storage_.size() && "index out of bounds!");
       return storage_[toIndex_(n)];
     }
@@ -72,7 +72,7 @@ template <typename T, typename ToIndexT = identity<unsigned>>
         resize(NewSize);
     }
 
-    bool inBounds(IndexT n) const {
+    __attribute__((always_inline)) bool inBounds(IndexT n) const {
       return toIndex_(n) < storage_.size();
     }
 

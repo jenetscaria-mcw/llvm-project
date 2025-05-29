@@ -6,19 +6,16 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef _LIBCPP___ALGORITHM_RANGES_ROTATE_H
-#define _LIBCPP___ALGORITHM_RANGES_ROTATE_H
+#ifndef _LIBCPP___ALGORITHM_RANGES_ROTATE_COPY_H
+#define _LIBCPP___ALGORITHM_RANGES_ROTATE_COPY_H
 
-#include <__algorithm/iterator_operations.h>
-#include <__algorithm/ranges_iterator_concept.h>
-#include <__algorithm/rotate.h>
+#include <__algorithm/in_out_result.h>
+#include <__algorithm/ranges_copy.h>
 #include <__config>
 #include <__iterator/concepts.h>
-#include <__iterator/iterator_traits.h>
-#include <__iterator/permutable.h>
 #include <__ranges/access.h>
 #include <__ranges/concepts.h>
-#include <__ranges/subrange.h>
+#include <__ranges/dangling.h>
 #include <__utility/move.h>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
@@ -33,32 +30,32 @@ _LIBCPP_PUSH_MACROS
 _LIBCPP_BEGIN_NAMESPACE_STD
 
 namespace ranges {
-namespace __rotate {
 
+template <class _InIter, class _OutIter>
+using rotate_copy_result = in_out_result<_InIter, _OutIter>;
+
+namespace __rotate_copy {
 struct __fn {
-  template <class _Iter, class _Sent>
-  _LIBCPP_HIDE_FROM_ABI constexpr static subrange<_Iter> __rotate_fn_impl(_Iter __first, _Iter __middle, _Sent __last) {
-    auto __ret = std::__rotate<_RangeAlgPolicy>(std::move(__first), std::move(__middle), std::move(__last));
-    return {std::move(__ret.first), std::move(__ret.second)};
+  template <forward_iterator _InIter, sentinel_for<_InIter> _Sent, weakly_incrementable _OutIter>
+    requires indirectly_copyable<_InIter, _OutIter>
+  _LIBCPP_HIDE_FROM_ABI constexpr rotate_copy_result<_InIter, _OutIter>
+  operator()(_InIter __first, _InIter __middle, _Sent __last, _OutIter __result) const {
+    auto __res1 = ranges::copy(__middle, __last, std::move(__result));
+    auto __res2 = ranges::copy(__first, __middle, std::move(__res1.out));
+    return {std::move(__res1.in), std::move(__res2.out)};
   }
 
-  template <permutable _Iter, sentinel_for<_Iter> _Sent>
-  _LIBCPP_HIDE_FROM_ABI constexpr subrange<_Iter> operator()(_Iter __first, _Iter __middle, _Sent __last) const {
-    return __rotate_fn_impl(std::move(__first), std::move(__middle), std::move(__last));
-  }
-
-  template <forward_range _Range>
-    requires permutable<iterator_t<_Range>>
-  _LIBCPP_HIDE_FROM_ABI constexpr borrowed_subrange_t<_Range>
-  operator()(_Range&& __range, iterator_t<_Range> __middle) const {
-    return __rotate_fn_impl(ranges::begin(__range), std::move(__middle), ranges::end(__range));
+  template <forward_range _Range, weakly_incrementable _OutIter>
+    requires indirectly_copyable<iterator_t<_Range>, _OutIter>
+  _LIBCPP_HIDE_FROM_ABI constexpr rotate_copy_result<borrowed_iterator_t<_Range>, _OutIter>
+  operator()(_Range&& __range, iterator_t<_Range> __middle, _OutIter __result) const {
+    return (*this)(ranges::begin(__range), std::move(__middle), ranges::end(__range), std::move(__result));
   }
 };
-
-} // namespace __rotate
+} // namespace __rotate_copy
 
 inline namespace __cpo {
-inline constexpr auto rotate = __rotate::__fn{};
+inline constexpr auto rotate_copy = __rotate_copy::__fn{};
 } // namespace __cpo
 } // namespace ranges
 
@@ -68,4 +65,4 @@ _LIBCPP_END_NAMESPACE_STD
 
 _LIBCPP_POP_MACROS
 
-#endif // _LIBCPP___ALGORITHM_RANGES_ROTATE_H
+#endif // _LIBCPP___ALGORITHM_RANGES_ROTATE_COPY_H

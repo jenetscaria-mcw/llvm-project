@@ -116,13 +116,13 @@ public:
   /// Clear the value to null with the min tag type.
   void clear() { set<HelperT::MinTag>(nullptr); }
 
-  TagT getTag() const {
+  __attribute__((always_inline)) TagT getTag() const {
     return static_cast<TagT>(getOpaqueValue() & HelperT::TagMask);
   }
 
-  template <TagT N> bool is() const { return N == getTag(); }
+  __attribute__((always_inline)) template <TagT N> bool is() const { return N == getTag(); }
 
-  template <TagT N> typename HelperT::template Lookup<N>::PointerT get() const {
+  __attribute__((always_inline)) template <TagT N> typename HelperT::template Lookup<N>::PointerT get() const {
     void *P = is<N>() ? getVoidPtr() : nullptr;
     return HelperT::template Lookup<N>::TraitsT::getFromVoidPointer(P);
   }
@@ -138,7 +138,7 @@ public:
   /// stored, get the address of the stored value type-punned to the zero-tag's
   /// pointer type.
   typename HelperT::template Lookup<HelperT::MinTag>::PointerT const *
-  getAddrOfZeroTagPointer() const {
+  __attribute__((always_inline)) getAddrOfZeroTagPointer() const {
     return const_cast<PointerSumType *>(this)->getAddrOfZeroTagPointer();
   }
 
@@ -146,7 +146,7 @@ public:
   /// stored, get the address of the stored value type-punned to the zero-tag's
   /// pointer type.
   typename HelperT::template Lookup<HelperT::MinTag>::PointerT *
-  getAddrOfZeroTagPointer() {
+  __attribute__((always_inline)) getAddrOfZeroTagPointer() {
     static_assert(HelperT::MinTag == 0, "Non-zero minimum tag value!");
     assert(is<HelperT::MinTag>() && "The active tag is not zero!");
     // Store the initial value of the pointer when read out of our storage.
@@ -163,7 +163,7 @@ public:
     return &Storage.MinTagPointer;
   }
 
-  explicit operator bool() const {
+  __attribute__((always_inline)) explicit operator bool() const {
     return getOpaqueValue() & HelperT::PointerMask;
   }
   bool operator==(const PointerSumType &R) const {
@@ -185,14 +185,14 @@ public:
     return getOpaqueValue() >= R.getOpaqueValue();
   }
 
-  uintptr_t getOpaqueValue() const {
+  __attribute__((always_inline)) uintptr_t getOpaqueValue() const {
     // Read the underlying storage of the union, regardless of the active
     // member.
     return bit_cast<uintptr_t>(Storage);
   }
 
 protected:
-  void *getVoidPtr() const {
+  __attribute__((always_inline)) void *getVoidPtr() const {
     return reinterpret_cast<void *>(getOpaqueValue() & HelperT::PointerMask);
   }
 };

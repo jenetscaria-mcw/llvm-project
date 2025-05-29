@@ -35,7 +35,7 @@ template <typename From> struct simplify_type {
   using SimpleType = From; // The real type this represents...
 
   // An accessor to get the real value...
-  static SimpleType &getSimplifiedValue(From &Val) { return Val; }
+  __attribute__((always_inline)) static SimpleType &getSimplifiedValue(From &Val) { return Val; }
 };
 
 template <typename From> struct simplify_type<const From> {
@@ -210,7 +210,7 @@ template <class To, class From, class SimpleFrom> struct cast_convert_val {
 
 template <class To, class FromTy> struct cast_convert_val<To, FromTy, FromTy> {
   // If it's a reference, switch to a pointer to do the cast and then deref it.
-  static typename cast_retty<To, FromTy>::ret_type doit(const FromTy &Val) {
+  __attribute__((always_inline)) static typename cast_retty<To, FromTy>::ret_type doit(const FromTy &Val) {
     return *(std::remove_reference_t<typename cast_retty<To, FromTy>::ret_type>
                  *)&const_cast<FromTy &>(Val);
   }
@@ -307,7 +307,7 @@ template <typename To> struct NullableValueCastFailed {
 /// parameter *must* be provided for forwarding castFailed and doCast.
 template <typename To, typename From, typename Derived>
 struct DefaultDoCastIfPossible {
-  static To doCastIfPossible(From f) {
+  __attribute__((always_inline)) static To doCastIfPossible(From f) {
     if (!Derived::isPossible(f))
       return Derived::castFailed();
     return Derived::doCast(f);
@@ -735,7 +735,7 @@ template <class X, class Y> auto cast_or_null(std::unique_ptr<Y> &&Val) {
 
 /// dyn_cast_if_present<X> - Functionally identical to dyn_cast, except that a
 /// null (or none in the case of optionals) value is accepted.
-template <class X, class Y> auto dyn_cast_if_present(const Y &Val) {
+__attribute__((always_inline)) template <class X, class Y> auto dyn_cast_if_present(const Y &Val) {
   if (!detail::isPresent(Val))
     return CastInfo<X, const Y>::castFailed();
   return CastInfo<X, const Y>::doCastIfPossible(detail::unwrapValue(Val));

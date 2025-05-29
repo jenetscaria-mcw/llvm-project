@@ -20,7 +20,7 @@ class Register {
   unsigned Reg;
 
 public:
-  constexpr Register(unsigned Val = 0) : Reg(Val) {}
+  __attribute__((always_inline)) constexpr Register(unsigned Val = 0) : Reg(Val) {}
   constexpr Register(MCRegister Val) : Reg(Val) {}
 
   // Register numbers can represent physical registers, virtual registers, and
@@ -62,19 +62,19 @@ public:
 
   /// Return true if the specified register number is in
   /// the physical register namespace.
-  static constexpr bool isPhysicalRegister(unsigned Reg) {
+  __attribute__((always_inline)) static constexpr bool isPhysicalRegister(unsigned Reg) {
     return MCRegister::isPhysicalRegister(Reg);
   }
 
   /// Return true if the specified register number is in
   /// the virtual register namespace.
-  static constexpr bool isVirtualRegister(unsigned Reg) {
+  __attribute__((always_inline)) static constexpr bool isVirtualRegister(unsigned Reg) {
     return Reg & MCRegister::VirtualRegFlag;
   }
 
   /// Convert a virtual register number to a 0-based index.
   /// The first virtual register in a function will get the index 0.
-  static unsigned virtReg2Index(Register Reg) {
+  __attribute__((always_inline)) static unsigned virtReg2Index(Register Reg) {
     assert(Reg.isVirtual() && "Not a virtual register");
     return Reg & ~MCRegister::VirtualRegFlag;
   }
@@ -88,19 +88,19 @@ public:
 
   /// Return true if the specified register number is in the virtual register
   /// namespace.
-  constexpr bool isVirtual() const { return isVirtualRegister(Reg); }
+  __attribute__((always_inline)) constexpr bool isVirtual() const { return isVirtualRegister(Reg); }
 
   /// Return true if the specified register number is in the physical register
   /// namespace.
-  constexpr bool isPhysical() const { return isPhysicalRegister(Reg); }
+  __attribute__((always_inline)) constexpr bool isPhysical() const { return isPhysicalRegister(Reg); }
 
   /// Convert a virtual register number to a 0-based index. The first virtual
   /// register in a function will get the index 0.
   unsigned virtRegIndex() const { return virtReg2Index(Reg); }
 
-  constexpr operator unsigned() const { return Reg; }
+  __attribute__((always_inline)) constexpr operator unsigned() const { return Reg; }
 
-  constexpr unsigned id() const { return Reg; }
+  __attribute__((always_inline)) constexpr unsigned id() const { return Reg; }
 
   constexpr operator MCRegister() const { return MCRegister(Reg); }
 
@@ -116,7 +116,7 @@ public:
   constexpr bool isValid() const { return Reg != MCRegister::NoRegister; }
 
   /// Comparisons between register objects
-  constexpr bool operator==(const Register &Other) const {
+  __attribute__((always_inline)) constexpr bool operator==(const Register &Other) const {
     return Reg == Other.Reg;
   }
   constexpr bool operator!=(const Register &Other) const {

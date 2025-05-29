@@ -598,7 +598,7 @@ protected:
   using RecordedMIVector = SmallVector<MachineInstr *, 4>;
   using NewMIVector = SmallVector<MachineInstrBuilder, 4>;
 
-  struct MatcherState {
+  __attribute__((always_inline)) struct MatcherState {
     std::vector<ComplexRendererFns::value_type> Renderers;
     RecordedMIVector MIs;
     DenseMap<unsigned, unsigned> TempRegisters;
@@ -707,7 +707,7 @@ protected:
   /// preceed IntoMI.
   bool isObviouslySafeToFold(MachineInstr &MI, MachineInstr &IntoMI) const;
 
-  template <typename Ty> static Ty readBytesAs(const uint8_t *MatchTable) {
+  __attribute__((always_inline)) template <typename Ty> static Ty readBytesAs(const uint8_t *MatchTable) {
     Ty Ret;
     memcpy(&Ret, MatchTable, sizeof(Ret));
     return Ret;

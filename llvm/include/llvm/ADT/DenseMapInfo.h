@@ -126,9 +126,9 @@ template <> struct DenseMapInfo<unsigned short> {
 template<> struct DenseMapInfo<unsigned> {
   static inline unsigned getEmptyKey() { return ~0U; }
   static inline unsigned getTombstoneKey() { return ~0U - 1; }
-  static unsigned getHashValue(const unsigned& Val) { return Val * 37U; }
+  __attribute__((always_inline)) static unsigned getHashValue(const unsigned& Val) { return Val * 37U; }
 
-  static bool isEqual(const unsigned& LHS, const unsigned& RHS) {
+  __attribute__((always_inline)) static bool isEqual(const unsigned& LHS, const unsigned& RHS) {
     return LHS == RHS;
   }
 };
@@ -138,7 +138,7 @@ template<> struct DenseMapInfo<unsigned long> {
   static inline unsigned long getEmptyKey() { return ~0UL; }
   static inline unsigned long getTombstoneKey() { return ~0UL - 1L; }
 
-  static unsigned getHashValue(const unsigned long& Val) {
+  __attribute__((always_inline)) static unsigned getHashValue(const unsigned long& Val) {
     if constexpr (sizeof(Val) == 4)
       return DenseMapInfo<unsigned>::getHashValue(Val);
     else

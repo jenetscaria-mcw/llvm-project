@@ -42,7 +42,7 @@ class GISelChangeObserver;
 /// Class which stores all the state required in a MachineIRBuilder.
 /// Since MachineIRBuilders will only store state in this object, it allows
 /// to transfer BuilderState between different kinds of MachineIRBuilders.
-struct MachineIRBuilderState {
+__attribute__((always_inline)) struct MachineIRBuilderState {
   /// MachineFunction under construction.
   MachineFunction *MF = nullptr;
   /// Information used to access the description of the opcodes.
@@ -76,11 +76,11 @@ class DstOp {
 
 public:
   enum class DstType { Ty_LLT, Ty_Reg, Ty_RC };
-  DstOp(unsigned R) : Reg(R), Ty(DstType::Ty_Reg) {}
-  DstOp(Register R) : Reg(R), Ty(DstType::Ty_Reg) {}
+  __attribute__((always_inline)) DstOp(unsigned R) : Reg(R), Ty(DstType::Ty_Reg) {}
+  __attribute__((always_inline)) DstOp(Register R) : Reg(R), Ty(DstType::Ty_Reg) {}
   DstOp(const MachineOperand &Op) : Reg(Op.getReg()), Ty(DstType::Ty_Reg) {}
-  DstOp(const LLT T) : LLTTy(T), Ty(DstType::Ty_LLT) {}
-  DstOp(const TargetRegisterClass *TRC) : RC(TRC), Ty(DstType::Ty_RC) {}
+  __attribute__((always_inline)) DstOp(const LLT T) : LLTTy(T), Ty(DstType::Ty_LLT) {}
+  __attribute__((always_inline)) DstOp(const TargetRegisterClass *TRC) : RC(TRC), Ty(DstType::Ty_RC) {}
 
   void addDefToMIB(MachineRegisterInfo &MRI, MachineInstrBuilder &MIB) const {
     switch (Ty) {
@@ -138,8 +138,8 @@ class SrcOp {
 
 public:
   enum class SrcType { Ty_Reg, Ty_MIB, Ty_Predicate, Ty_Imm };
-  SrcOp(Register R) : Reg(R), Ty(SrcType::Ty_Reg) {}
-  SrcOp(const MachineOperand &Op) : Reg(Op.getReg()), Ty(SrcType::Ty_Reg) {}
+  __attribute__((always_inline)) SrcOp(Register R) : Reg(R), Ty(SrcType::Ty_Reg) {}
+  __attribute__((always_inline)) SrcOp(const MachineOperand &Op) : Reg(Op.getReg()), Ty(SrcType::Ty_Reg) {}
   SrcOp(const MachineInstrBuilder &MIB) : SrcMIB(MIB), Ty(SrcType::Ty_MIB) {}
   SrcOp(const CmpInst::Predicate P) : Pred(P), Ty(SrcType::Ty_Predicate) {}
   /// Use of registers held in unsigned integer variables (or more rarely signed
@@ -247,7 +247,7 @@ public:
   MachineIRBuilder() = default;
   MachineIRBuilder(MachineFunction &MF) { setMF(MF); }
 
-  MachineIRBuilder(MachineBasicBlock &MBB, MachineBasicBlock::iterator InsPt) {
+  __attribute__((always_inline)) MachineIRBuilder(MachineBasicBlock &MBB, MachineBasicBlock::iterator InsPt) {
     setMF(*MBB.getParent());
     setInsertPt(MBB, InsPt);
   }
@@ -263,7 +263,7 @@ public:
     setChangeObserver(Observer);
   }
 
-  virtual ~MachineIRBuilder() = default;
+  __attribute__((always_inline)) virtual ~MachineIRBuilder() = default;
 
   MachineIRBuilder(const MachineIRBuilderState &BState) : State(BState) {}
 
@@ -295,7 +295,7 @@ public:
   const DebugLoc &getDL() { return State.DL; }
 
   /// Getter for MRI
-  MachineRegisterInfo *getMRI() { return State.MRI; }
+  __attribute__((always_inline)) MachineRegisterInfo *getMRI() { return State.MRI; }
   const MachineRegisterInfo *getMRI() const { return State.MRI; }
 
   /// Getter for the State
@@ -319,12 +319,12 @@ public:
   const GISelCSEInfo *getCSEInfo() const { return State.CSEInfo; }
 
   /// Current insertion point for new instructions.
-  MachineBasicBlock::iterator getInsertPt() { return State.II; }
+  __attribute__((always_inline)) MachineBasicBlock::iterator getInsertPt() { return State.II; }
 
   /// Set the insertion point before the specified position.
   /// \pre MBB must be in getMF().
   /// \pre II must be a valid iterator in MBB.
-  void setInsertPt(MachineBasicBlock &MBB, MachineBasicBlock::iterator II) {
+  __attribute__((always_inline)) void setInsertPt(MachineBasicBlock &MBB, MachineBasicBlock::iterator II) {
     assert(MBB.getParent() == &getMF() &&
            "Basic block is in a different function");
     State.MBB = &MBB;
@@ -342,7 +342,7 @@ public:
 
   /// Set the insertion point to the  end of \p MBB.
   /// \pre \p MBB must be contained by getMF().
-  void setMBB(MachineBasicBlock &MBB) {
+  __attribute__((always_inline)) void setMBB(MachineBasicBlock &MBB) {
     State.MBB = &MBB;
     State.II = MBB.end();
     assert(&getMF() == MBB.getParent() &&
@@ -351,7 +351,7 @@ public:
 
   /// Set the insertion point to before MI.
   /// \pre MI must be in getMF().
-  void setInstr(MachineInstr &MI) {
+  __attribute__((always_inline)) void setInstr(MachineInstr &MI) {
     assert(MI.getParent() && "Instruction is not part of a basic block");
     setMBB(*MI.getParent());
     State.II = MI.getIterator();
@@ -371,7 +371,7 @@ public:
     State.Observer = &Observer;
   }
 
-  GISelChangeObserver *getObserver() { return State.Observer; }
+  __attribute__((always_inline)) GISelChangeObserver *getObserver() { return State.Observer; }
 
   void stopObservingChanges() { State.Observer = nullptr; }
 
@@ -379,19 +379,19 @@ public:
   /// @}
 
   /// Set the debug location to \p DL for all the next build instructions.
-  void setDebugLoc(const DebugLoc &DL) { this->State.DL = DL; }
+  __attribute__((always_inline)) void setDebugLoc(const DebugLoc &DL) { this->State.DL = DL; }
 
   /// Get the current instruction's debug location.
   const DebugLoc &getDebugLoc() { return State.DL; }
 
   /// Set the PC sections metadata to \p MD for all the next build instructions.
-  void setPCSections(MDNode *MD) { State.PCSections = MD; }
+  __attribute__((always_inline)) void setPCSections(MDNode *MD) { State.PCSections = MD; }
 
   /// Get the current instruction's PC sections metadata.
   MDNode *getPCSections() { return State.PCSections; }
 
   /// Set the PC sections metadata to \p MD for all the next build instructions.
-  void setMMRAMetadata(MDNode *MMRA) { State.MMRA = MMRA; }
+  __attribute__((always_inline)) void setMMRAMetadata(MDNode *MMRA) { State.MMRA = MMRA; }
 
   /// Get the current instruction's MMRA metadata.
   MDNode *getMMRAMetadata() { return State.MMRA; }
@@ -403,7 +403,7 @@ public:
   /// \pre setBasicBlock or setMI must have been called.
   ///
   /// \return a MachineInstrBuilder for the newly created instruction.
-  MachineInstrBuilder buildInstr(unsigned Opcode) {
+  __attribute__((always_inline)) MachineInstrBuilder buildInstr(unsigned Opcode) {
     return insertInstr(buildInstrNoInsert(Opcode));
   }
 
@@ -699,7 +699,7 @@ public:
   }
 
   /// Build and insert a G_PTRTOINT instruction.
-  MachineInstrBuilder buildPtrToInt(const DstOp &Dst, const SrcOp &Src) {
+  __attribute__((always_inline)) MachineInstrBuilder buildPtrToInt(const DstOp &Dst, const SrcOp &Src) {
     return buildInstr(TargetOpcode::G_PTRTOINT, {Dst}, {Src});
   }
 

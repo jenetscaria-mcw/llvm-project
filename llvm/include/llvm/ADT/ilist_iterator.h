@@ -109,9 +109,9 @@ private:
 
 public:
   /// Create from an ilist_node.
-  explicit ilist_iterator(node_reference N) : NodePtr(&N) {}
+  __attribute__((always_inline)) explicit ilist_iterator(node_reference N) : NodePtr(&N) {}
 
-  explicit ilist_iterator(pointer NP) : NodePtr(Access::getNodePtr(NP)) {}
+  __attribute__((always_inline)) explicit ilist_iterator(pointer NP) : NodePtr(Access::getNodePtr(NP)) {}
   explicit ilist_iterator(reference NR) : NodePtr(Access::getNodePtr(&NR)) {}
   ilist_iterator() = default;
 
@@ -120,7 +120,7 @@ public:
   template <bool RHSIsConst>
   ilist_iterator(const ilist_iterator<OptionsT, IsReverse, RHSIsConst> &RHS,
                  std::enable_if_t<IsConst || !RHSIsConst, void *> = nullptr)
-      : NodePtr(RHS.NodePtr) {}
+      __attribute__((always_inline)) : NodePtr(RHS.NodePtr) {}
 
   // This is templated so that we can allow assigning to a const iterator from
   // a nonconst iterator...
@@ -171,7 +171,7 @@ public:
   pointer operator->() const { return &operator*(); }
 
   // Comparison operators
-  friend bool operator==(const ilist_iterator &LHS, const ilist_iterator &RHS) {
+  __attribute__((always_inline)) friend bool operator==(const ilist_iterator &LHS, const ilist_iterator &RHS) {
     return LHS.NodePtr == RHS.NodePtr;
   }
   friend bool operator!=(const ilist_iterator &LHS, const ilist_iterator &RHS) {
@@ -183,7 +183,7 @@ public:
     NodePtr = IsReverse ? NodePtr->getNext() : NodePtr->getPrev();
     return *this;
   }
-  ilist_iterator &operator++() {
+  __attribute__((always_inline)) ilist_iterator &operator++() {
     NodePtr = IsReverse ? NodePtr->getPrev() : NodePtr->getNext();
     return *this;
   }

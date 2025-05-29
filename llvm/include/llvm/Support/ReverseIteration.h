@@ -7,7 +7,7 @@
 namespace llvm {
 
 template<class T = void *>
-bool shouldReverseIterate() {
+__attribute__((always_inline)) bool shouldReverseIterate() {
 #if LLVM_ENABLE_REVERSE_ITERATION
   return detail::IsPointerLike<T>::value;
 #else

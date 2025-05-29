@@ -229,7 +229,7 @@ public:
 
   /// Returns the code model. The choices are small, kernel, medium, large, and
   /// target default.
-  CodeModel::Model getCodeModel() const { return CMModel; }
+  __attribute__((always_inline)) CodeModel::Model getCodeModel() const { return CMModel; }
 
   /// Returns the maximum code size possible under the code model.
   uint64_t getMaxCodeSize() const;

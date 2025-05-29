@@ -815,7 +815,7 @@ public:
 
   /// Returns the register class associated with the enumeration value.
   /// See class MCOperandInfo.
-  const TargetRegisterClass *getRegClass(unsigned i) const {
+  __attribute__((always_inline)) const TargetRegisterClass *getRegClass(unsigned i) const {
     assert(i < getNumRegClasses() && "Register Class ID out of range");
     return RegClassBegin[i];
   }
@@ -1369,7 +1369,7 @@ public:
 // This is useful when building IndexedMaps keyed on virtual registers
 struct VirtReg2IndexFunctor {
   using argument_type = Register;
-  unsigned operator()(Register Reg) const {
+  __attribute__((always_inline)) unsigned operator()(Register Reg) const {
     return Register::virtReg2Index(Reg);
   }
 };

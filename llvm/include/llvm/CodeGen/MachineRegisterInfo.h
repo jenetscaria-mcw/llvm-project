@@ -117,14 +117,14 @@ private:
     return PhysRegUseDefLists[RegNo.id()];
   }
 
-  MachineOperand *getRegUseDefListHead(Register RegNo) const {
+  __attribute__((always_inline)) MachineOperand *getRegUseDefListHead(Register RegNo) const {
     if (RegNo.isVirtual())
       return VRegInfo[RegNo.id()].second;
     return PhysRegUseDefLists[RegNo.id()];
   }
 
   /// Get the next element in the use-def chain.
-  static MachineOperand *getNextOperandForReg(const MachineOperand *MO) {
+  __attribute__((always_inline)) static MachineOperand *getNextOperandForReg(const MachineOperand *MO) {
     assert(MO && MO->isReg() && "This is not a register operand!");
     return MO->Contents.Reg.Next;
   }
@@ -529,10 +529,10 @@ public:
   /// specified register, skipping those marked as Debug.
   using use_nodbg_iterator =
       defusechain_iterator<true, false, true, true, false, false>;
-  use_nodbg_iterator use_nodbg_begin(Register RegNo) const {
+  __attribute__((always_inline)) use_nodbg_iterator use_nodbg_begin(Register RegNo) const {
     return use_nodbg_iterator(getRegUseDefListHead(RegNo));
   }
-  static use_nodbg_iterator use_nodbg_end() {
+  __attribute__((always_inline)) static use_nodbg_iterator use_nodbg_end() {
     return use_nodbg_iterator(nullptr);
   }
 
@@ -577,7 +577,7 @@ public:
 
   /// use_nodbg_empty - Return true if there are no non-Debug instructions
   /// using the specified register.
-  bool use_nodbg_empty(Register RegNo) const {
+  __attribute__((always_inline)) bool use_nodbg_empty(Register RegNo) const {
     return use_nodbg_begin(RegNo) == use_nodbg_end();
   }
 
@@ -684,7 +684,7 @@ public:
   /// Return the register bank or register class of \p Reg.
   /// \note Before the register bank gets assigned (i.e., before the
   /// RegBankSelect pass) \p Reg may not have either.
-  const RegClassOrRegBank &getRegClassOrRegBank(Register Reg) const {
+  __attribute__((always_inline)) const RegClassOrRegBank &getRegClassOrRegBank(Register Reg) const {
     return VRegInfo[Reg].first;
   }
 
@@ -766,7 +766,7 @@ public:
 
   /// Get the low-level type of \p Reg or LLT{} if Reg is not a generic
   /// (target independent) virtual register.
-  LLT getType(Register Reg) const {
+  __attribute__((always_inline)) LLT getType(Register Reg) const {
     if (Reg.isVirtual() && VRegToType.inBounds(Reg))
       return VRegToType[Reg];
     return LLT{};
@@ -1047,7 +1047,7 @@ public:
   private:
     MachineOperand *Op = nullptr;
 
-    explicit defusechain_iterator(MachineOperand *op) : Op(op) {
+    __attribute__((always_inline)) explicit defusechain_iterator(MachineOperand *op) : Op(op) {
       // If the first node isn't one we're interested in, advance to one that
       // we are interested in.
       if (op) {
@@ -1058,7 +1058,7 @@ public:
       }
     }
 
-    void advance() {
+    __attribute__((always_inline)) void advance() {
       assert(Op && "Cannot increment end iterator!");
       Op = getNextOperandForReg(Op);
 
@@ -1081,7 +1081,7 @@ public:
   public:
     defusechain_iterator() = default;
 
-    bool operator==(const defusechain_iterator &x) const {
+    __attribute__((always_inline)) bool operator==(const defusechain_iterator &x) const {
       return Op == x.Op;
     }
     bool operator!=(const defusechain_iterator &x) const {

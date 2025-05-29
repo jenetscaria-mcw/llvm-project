@@ -88,7 +88,7 @@ private:
 public:
   explicit MachineJumpTableInfo(JTEntryKind Kind): EntryKind(Kind) {}
 
-  JTEntryKind getEntryKind() const { return EntryKind; }
+  __attribute__((always_inline)) JTEntryKind getEntryKind() const { return EntryKind; }
 
   /// getEntrySize - Return the size of each entry in the jump table.
   unsigned getEntrySize(const DataLayout &TD) const;
