@@ -260,16 +260,14 @@ public:
   }
 
   /// If the value is "Thread Local", its value isn't shared by the threads.
-  bool isThreadLocal() const { return getThreadLocalMode() != NotThreadLocal; }
-  void setThreadLocal(bool Val) {
+  inline __attribute__((always_inline)) bool isThreadLocal() const { return getThreadLocalMode() != NotThreadLocal; }  void setThreadLocal(bool Val) {
     setThreadLocalMode(Val ? GeneralDynamicTLSModel : NotThreadLocal);
   }
   void setThreadLocalMode(ThreadLocalMode Val) {
     assert(Val == NotThreadLocal || getValueID() != Value::FunctionVal);
     ThreadLocal = Val;
   }
-  ThreadLocalMode getThreadLocalMode() const {
-    return static_cast<ThreadLocalMode>(ThreadLocal);
+  inline __attribute__((always_inline)) ThreadLocalMode getThreadLocalMode() const {    return static_cast<ThreadLocalMode>(ThreadLocal);
   }
 
   DLLStorageClassTypes getDLLStorageClass() const {
@@ -302,7 +300,7 @@ public:
 
   void setDSOLocal(bool Local) { IsDSOLocal = Local; }
 
-  bool isDSOLocal() const {
+  inline __attribute__((always_inline)) bool isDSOLocal() const {    
     return IsDSOLocal;
   }
 
@@ -409,7 +407,7 @@ public:
   static bool isLocalLinkage(LinkageTypes Linkage) {
     return isInternalLinkage(Linkage) || isPrivateLinkage(Linkage);
   }
-  static bool isExternalWeakLinkage(LinkageTypes Linkage) {
+  inline __attribute__((always_inline)) static bool isExternalWeakLinkage(LinkageTypes Linkage) {    
     return Linkage == ExternalWeakLinkage;
   }
   static bool isCommonLinkage(LinkageTypes Linkage) {
@@ -526,7 +524,7 @@ public:
   bool hasInternalLinkage() const { return isInternalLinkage(getLinkage()); }
   bool hasPrivateLinkage() const { return isPrivateLinkage(getLinkage()); }
   bool hasLocalLinkage() const { return isLocalLinkage(getLinkage()); }
-  bool hasExternalWeakLinkage() const {
+  inline __attribute__((always_inline)) bool hasExternalWeakLinkage() const {    
     return isExternalWeakLinkage(getLinkage());
   }
   bool hasCommonLinkage() const { return isCommonLinkage(getLinkage()); }
@@ -543,8 +541,7 @@ public:
     if (isImplicitDSOLocal())
       setDSOLocal(true);
   }
-  LinkageTypes getLinkage() const { return LinkageTypes(Linkage); }
-
+  inline __attribute__((always_inline)) LinkageTypes getLinkage() const { return LinkageTypes(Linkage); }
   bool isDiscardableIfUnused() const {
     return isDiscardableIfUnused(getLinkage());
   }

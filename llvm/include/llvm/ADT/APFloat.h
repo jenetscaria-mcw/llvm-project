@@ -903,7 +903,8 @@ class APFloat : public APFloatBase {
     }
   } U;
 
-  template <typename T> static bool usesLayout(const fltSemantics &Semantics) {
+ template <typename T> 
+inline __attribute__((always_inline)) static bool usesLayout(const fltSemantics &Semantics) {
     static_assert(std::is_same<T, IEEEFloat>::value ||
                   std::is_same<T, DoubleAPFloat>::value);
     if (std::is_same<T, DoubleAPFloat>::value) {
@@ -1257,8 +1258,7 @@ public:
         convertFromZeroExtendedInteger(Input, InputSize, IsSigned, RM));
   }
   Expected<opStatus> convertFromString(StringRef, roundingMode);
-  APInt bitcastToAPInt() const {
-    APFLOAT_DISPATCH_ON_SEMANTICS(bitcastToAPInt());
+ inline __attribute__((always_inline)) APInt bitcastToAPInt() const {    APFLOAT_DISPATCH_ON_SEMANTICS(bitcastToAPInt());
   }
 
   /// Converts this APFloat to host double value.
@@ -1359,8 +1359,7 @@ public:
   bool isFinite() const { return !isNaN() && !isInfinity(); }
 
   fltCategory getCategory() const { return getIEEE().getCategory(); }
-  const fltSemantics &getSemantics() const { return *U.semantics; }
-  bool isNonZero() const { return !isZero(); }
+ inline __attribute__((always_inline)) const fltSemantics &getSemantics() const { return *U.semantics; }  bool isNonZero() const { return !isZero(); }
   bool isFiniteNonZero() const { return isFinite() && !isZero(); }
   bool isPosZero() const { return isZero() && !isNegative(); }
   bool isNegZero() const { return isZero() && isNegative(); }

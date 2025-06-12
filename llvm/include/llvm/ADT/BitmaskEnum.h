@@ -126,7 +126,8 @@ template <typename E> constexpr std::underlying_type_t<E> Mask() {
 
 /// Check that Val is in range for E, and return Val cast to E's underlying
 /// type.
-template <typename E> constexpr std::underlying_type_t<E> Underlying(E Val) {
+template <typename E> 
+inline __attribute__((always_inline)) constexpr std::underlying_type_t<E> Underlying(E Val) {
   auto U = llvm::to_underlying(Val);
   assert(U >= 0 && "Negative enum values are not allowed.");
   assert(U <= Mask<E>() && "Enum value too large (or largest val too small?)");

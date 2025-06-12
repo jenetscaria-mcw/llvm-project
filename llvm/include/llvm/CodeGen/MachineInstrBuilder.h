@@ -73,32 +73,26 @@ class MachineInstrBuilder {
   MachineInstr *MI = nullptr;
 
 public:
-  MachineInstrBuilder() = default;
-
+ inline __attribute__((always_inline)) MachineInstrBuilder() = default;
   /// Create a MachineInstrBuilder for manipulating an existing instruction.
   /// F must be the machine function that was used to allocate I.
-  MachineInstrBuilder(MachineFunction &F, MachineInstr *I) : MF(&F), MI(I) {}
-  MachineInstrBuilder(MachineFunction &F, MachineBasicBlock::iterator I)
+ inline __attribute__((always_inline)) MachineInstrBuilder(MachineFunction &F, MachineInstr *I) : MF(&F), MI(I) {}  MachineInstrBuilder(MachineFunction &F, MachineBasicBlock::iterator I)
       : MF(&F), MI(&*I) {}
 
   /// Allow automatic conversion to the machine instruction we are working on.
-  operator MachineInstr*() const { return MI; }
-  MachineInstr *operator->() const { return MI; }
-  operator MachineBasicBlock::iterator() const { return MI; }
+ inline __attribute__((always_inline)) operator MachineInstr*() const { return MI; } 
+ inline __attribute__((always_inline)) MachineInstr *operator->() const { return MI; }  operator MachineBasicBlock::iterator() const { return MI; }
 
   /// If conversion operators fail, use this method to get the MachineInstr
   /// explicitly.
-  MachineInstr *getInstr() const { return MI; }
-
+ inline __attribute__((always_inline)) MachineInstr *getInstr() const { return MI; }
   /// Get the register for the operand index.
   /// The operand at the index should be a register (asserted by
   /// MachineOperand).
-  Register getReg(unsigned Idx) const { return MI->getOperand(Idx).getReg(); }
-
+ inline __attribute__((always_inline)) Register getReg(unsigned Idx) const { return MI->getOperand(Idx).getReg(); }
   /// Add a new virtual register operand.
-  const MachineInstrBuilder &addReg(Register RegNo, unsigned flags = 0,
-                                    unsigned SubReg = 0) const {
-    assert((flags & 0x1) == 0 &&
+  inline __attribute__((always_inline)) const MachineInstrBuilder &addReg(Register RegNo, unsigned flags = 0,
+          unsigned SubReg = 0) const {    assert((flags & 0x1) == 0 &&
            "Passing in 'true' to addReg is forbidden! Use enums instead.");
     MI->addOperand(*MF, MachineOperand::CreateReg(RegNo,
                                                flags & RegState::Define,
@@ -115,39 +109,33 @@ public:
   }
 
   /// Add a virtual register definition operand.
-  const MachineInstrBuilder &addDef(Register RegNo, unsigned Flags = 0,
-                                    unsigned SubReg = 0) const {
-    return addReg(RegNo, Flags | RegState::Define, SubReg);
+  inline __attribute__((always_inline)) const MachineInstrBuilder &addDef(Register RegNo, unsigned Flags = 0,
+         unsigned SubReg = 0) const {    return addReg(RegNo, Flags | RegState::Define, SubReg);
   }
 
   /// Add a virtual register use operand. It is an error for Flags to contain
   /// `RegState::Define` when calling this function.
-  const MachineInstrBuilder &addUse(Register RegNo, unsigned Flags = 0,
-                                    unsigned SubReg = 0) const {
-    assert(!(Flags & RegState::Define) &&
+  inline __attribute__((always_inline)) const MachineInstrBuilder &addUse(Register RegNo, unsigned Flags = 0,
+         unsigned SubReg = 0) const {    assert(!(Flags & RegState::Define) &&
            "Misleading addUse defines register, use addReg instead.");
     return addReg(RegNo, Flags, SubReg);
   }
 
   /// Add a new immediate operand.
-  const MachineInstrBuilder &addImm(int64_t Val) const {
-    MI->addOperand(*MF, MachineOperand::CreateImm(Val));
+ inline __attribute__((always_inline)) const MachineInstrBuilder &addImm(int64_t Val) const {    MI->addOperand(*MF, MachineOperand::CreateImm(Val));
     return *this;
   }
 
-  const MachineInstrBuilder &addCImm(const ConstantInt *Val) const {
-    MI->addOperand(*MF, MachineOperand::CreateCImm(Val));
+ inline __attribute__((always_inline)) const MachineInstrBuilder &addCImm(const ConstantInt *Val) const {    MI->addOperand(*MF, MachineOperand::CreateCImm(Val));
     return *this;
   }
 
-  const MachineInstrBuilder &addFPImm(const ConstantFP *Val) const {
-    MI->addOperand(*MF, MachineOperand::CreateFPImm(Val));
+ inline __attribute__((always_inline)) const MachineInstrBuilder &addFPImm(const ConstantFP *Val) const {    MI->addOperand(*MF, MachineOperand::CreateFPImm(Val));
     return *this;
   }
 
-  const MachineInstrBuilder &addMBB(MachineBasicBlock *MBB,
-                                    unsigned TargetFlags = 0) const {
-    MI->addOperand(*MF, MachineOperand::CreateMBB(MBB, TargetFlags));
+  inline __attribute__((always_inline)) const MachineInstrBuilder &addMBB(MachineBasicBlock *MBB,
+          unsigned TargetFlags = 0) const {    MI->addOperand(*MF, MachineOperand::CreateMBB(MBB, TargetFlags));
     return *this;
   }
 
@@ -156,10 +144,9 @@ public:
     return *this;
   }
 
-  const MachineInstrBuilder &
+  inline __attribute__((always_inline)) const MachineInstrBuilder &
   addConstantPoolIndex(unsigned Idx, int Offset = 0,
-                       unsigned TargetFlags = 0) const {
-    MI->addOperand(*MF, MachineOperand::CreateCPI(Idx, Offset, TargetFlags));
+     unsigned TargetFlags = 0) const {    MI->addOperand(*MF, MachineOperand::CreateCPI(Idx, Offset, TargetFlags));
     return *this;
   }
 
@@ -170,16 +157,14 @@ public:
     return *this;
   }
 
-  const MachineInstrBuilder &addJumpTableIndex(unsigned Idx,
-                                               unsigned TargetFlags = 0) const {
-    MI->addOperand(*MF, MachineOperand::CreateJTI(Idx, TargetFlags));
+  inline __attribute__((always_inline)) const MachineInstrBuilder &addJumpTableIndex(unsigned Idx,
+            unsigned TargetFlags = 0) const {    MI->addOperand(*MF, MachineOperand::CreateJTI(Idx, TargetFlags));
     return *this;
   }
 
-  const MachineInstrBuilder &addGlobalAddress(const GlobalValue *GV,
-                                              int64_t Offset = 0,
-                                              unsigned TargetFlags = 0) const {
-    MI->addOperand(*MF, MachineOperand::CreateGA(GV, Offset, TargetFlags));
+  inline __attribute__((always_inline)) const MachineInstrBuilder &addGlobalAddress(const GlobalValue *GV,
+                                              int64_t Offset = 0, unsigned TargetFlags = 0) const {    
+              MI->addOperand(*MF, MachineOperand::CreateGA(GV, Offset, TargetFlags));
     return *this;
   }
 
@@ -189,10 +174,8 @@ public:
     return *this;
   }
 
-  const MachineInstrBuilder &addBlockAddress(const BlockAddress *BA,
-                                             int64_t Offset = 0,
-                                             unsigned TargetFlags = 0) const {
-    MI->addOperand(*MF, MachineOperand::CreateBA(BA, Offset, TargetFlags));
+  inline __attribute__((always_inline)) const MachineInstrBuilder &addBlockAddress(const BlockAddress *BA,
+                                             int64_t Offset = 0, unsigned TargetFlags = 0) const {    MI->addOperand(*MF, MachineOperand::CreateBA(BA, Offset, TargetFlags));
     return *this;
   }
 
@@ -201,8 +184,7 @@ public:
     return *this;
   }
 
-  const MachineInstrBuilder &addMemOperand(MachineMemOperand *MMO) const {
-    MI->addMemOperand(*MF, MMO);
+ inline __attribute__((always_inline)) const MachineInstrBuilder &addMemOperand(MachineMemOperand *MMO) const {    MI->addMemOperand(*MF, MMO);
     return *this;
   }
 
@@ -223,8 +205,8 @@ public:
     return *this;
   }
 
-  const MachineInstrBuilder &add(const MachineOperand &MO) const {
-    MI->addOperand(*MF, MO);
+ inline __attribute__((always_inline)) const MachineInstrBuilder &add(const MachineOperand &MO) const {    
+  MI->addOperand(*MF, MO);
     return *this;
   }
 
@@ -251,8 +233,8 @@ public:
     return *this;
   }
 
-  const MachineInstrBuilder &addIntrinsicID(Intrinsic::ID ID) const {
-    MI->addOperand(*MF, MachineOperand::CreateIntrinsicID(ID));
+ inline __attribute__((always_inline)) const MachineInstrBuilder &addIntrinsicID(Intrinsic::ID ID) const {    
+  MI->addOperand(*MF, MachineOperand::CreateIntrinsicID(ID));
     return *this;
   }
 
@@ -272,8 +254,8 @@ public:
     return *this;
   }
 
-  const MachineInstrBuilder &setMIFlags(unsigned Flags) const {
-    MI->setFlags(Flags);
+ inline __attribute__((always_inline)) const MachineInstrBuilder &setMIFlags(unsigned Flags) const {    
+  MI->setFlags(Flags);
     return *this;
   }
 
@@ -336,10 +318,10 @@ public:
     return *this;
   }
 
-  bool constrainAllUses(const TargetInstrInfo &TII,
+  inline __attribute__((always_inline)) bool constrainAllUses(const TargetInstrInfo &TII,
                         const TargetRegisterInfo &TRI,
-                        const RegisterBankInfo &RBI) const {
-    return constrainSelectedInstRegOperands(*MI, TII, TRI, RBI);
+       const RegisterBankInfo &RBI) const {    
+        return constrainSelectedInstRegOperands(*MI, TII, TRI, RBI);
   }
 };
 

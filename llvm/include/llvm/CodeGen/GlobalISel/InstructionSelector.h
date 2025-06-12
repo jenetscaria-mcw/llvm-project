@@ -16,8 +16,7 @@
 #include "llvm/CodeGen/GlobalISel/GIMatchTableExecutor.h"
 
 namespace llvm {
-class InstructionSelector : public GIMatchTableExecutor {
-public:
+  class InstructionSelector : public GIMatchTableExecutor {public:
   virtual ~InstructionSelector();
 
   /// Select the (possibly generic) instruction \p I to only use target-specific

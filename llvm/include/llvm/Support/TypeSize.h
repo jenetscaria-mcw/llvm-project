@@ -94,9 +94,8 @@ protected:
   bool Scalable = false;
 
   constexpr FixedOrScalableQuantity() = default;
-  constexpr FixedOrScalableQuantity(ScalarTy Quantity, bool Scalable)
-      : Quantity(Quantity), Scalable(Scalable) {}
-
+  inline __attribute__((always_inline)) constexpr FixedOrScalableQuantity(ScalarTy Quantity, bool Scalable)
+  : Quantity(Quantity), Scalable(Scalable) {}
   friend constexpr LeafTy &operator+=(LeafTy &LHS, const LeafTy &RHS) {
     assert((LHS.Quantity == 0 || RHS.Quantity == 0 ||
             LHS.Scalable == RHS.Scalable) &&
@@ -145,7 +144,7 @@ protected:
   }
 
 public:
-  constexpr bool operator==(const FixedOrScalableQuantity &RHS) const {
+  inline __attribute__((always_inline)) constexpr bool operator==(const FixedOrScalableQuantity &RHS) const {    
     return Quantity == RHS.Quantity && Scalable == RHS.Scalable;
   }
 
@@ -165,11 +164,9 @@ public:
   }
 
   /// Returns the minimum value this quantity can represent.
-  constexpr ScalarTy getKnownMinValue() const { return Quantity; }
-
+  inline __attribute__((always_inline)) constexpr ScalarTy getKnownMinValue() const { return Quantity; }
   /// Returns whether the quantity is scaled by a runtime quantity (vscale).
-  constexpr bool isScalable() const { return Scalable; }
-
+  inline __attribute__((always_inline)) constexpr bool isScalable() const { return Scalable; }
   /// Returns true if the quantity is not scaled by vscale.
   constexpr bool isFixed() const { return !Scalable; }
 
@@ -229,16 +226,14 @@ public:
     return false;
   }
 
-  static constexpr bool isKnownLE(const FixedOrScalableQuantity &LHS,
-                                  const FixedOrScalableQuantity &RHS) {
-    if (!LHS.isScalable() || RHS.isScalable())
+  inline __attribute__((always_inline)) static constexpr bool isKnownLE(const FixedOrScalableQuantity &LHS,
+         const FixedOrScalableQuantity &RHS) {    if (!LHS.isScalable() || RHS.isScalable())
       return LHS.getKnownMinValue() <= RHS.getKnownMinValue();
     return false;
   }
 
-  static constexpr bool isKnownGE(const FixedOrScalableQuantity &LHS,
-                                  const FixedOrScalableQuantity &RHS) {
-    if (LHS.isScalable() || !RHS.isScalable())
+  inline __attribute__((always_inline)) static constexpr bool isKnownGE(const FixedOrScalableQuantity &LHS,
+         const FixedOrScalableQuantity &RHS) {    if (LHS.isScalable() || !RHS.isScalable())
       return LHS.getKnownMinValue() >= RHS.getKnownMinValue();
     return false;
   }
@@ -298,9 +293,8 @@ public:
 //  - ElementCount::getScalable(4) : A scalable vector type holding 4 values.
 class ElementCount
     : public details::FixedOrScalableQuantity<ElementCount, unsigned> {
-  constexpr ElementCount(ScalarTy MinVal, bool Scalable)
-      : FixedOrScalableQuantity(MinVal, Scalable) {}
-
+  inline __attribute__((always_inline)) constexpr ElementCount(ScalarTy MinVal, bool Scalable)
+  : FixedOrScalableQuantity(MinVal, Scalable) {}
   constexpr ElementCount(
       const FixedOrScalableQuantity<ElementCount, unsigned> &V)
       : FixedOrScalableQuantity(V) {}
@@ -308,13 +302,13 @@ class ElementCount
 public:
   constexpr ElementCount() : FixedOrScalableQuantity() {}
 
-  static constexpr ElementCount getFixed(ScalarTy MinVal) {
+  inline __attribute__((always_inline)) static constexpr ElementCount getFixed(ScalarTy MinVal) {    
     return ElementCount(MinVal, false);
   }
   static constexpr ElementCount getScalable(ScalarTy MinVal) {
     return ElementCount(MinVal, true);
   }
-  static constexpr ElementCount get(ScalarTy MinVal, bool Scalable) {
+  inline __attribute__((always_inline)) static constexpr ElementCount get(ScalarTy MinVal, bool Scalable) {    
     return ElementCount(MinVal, Scalable);
   }
 
@@ -336,14 +330,12 @@ class TypeSize : public details::FixedOrScalableQuantity<TypeSize, uint64_t> {
       : FixedOrScalableQuantity(V) {}
 
 public:
-  constexpr TypeSize(ScalarTy Quantity, bool Scalable)
-      : FixedOrScalableQuantity(Quantity, Scalable) {}
-
+  inline __attribute__((always_inline)) constexpr TypeSize(ScalarTy Quantity, bool Scalable)
+  : FixedOrScalableQuantity(Quantity, Scalable) {}
   static constexpr TypeSize get(ScalarTy Quantity, bool Scalable) {
     return TypeSize(Quantity, Scalable);
   }
-  static constexpr TypeSize getFixed(ScalarTy ExactSize) {
-    return TypeSize(ExactSize, false);
+  inline __attribute__((always_inline)) static constexpr TypeSize getFixed(ScalarTy ExactSize) {    return TypeSize(ExactSize, false);
   }
   static constexpr TypeSize getScalable(ScalarTy MinimumSize) {
     return TypeSize(MinimumSize, true);

@@ -140,7 +140,7 @@ public:
   bool GETTER() const { return ATTRIBUTE; }
 #include "RISCVGenSubtargetInfo.inc"
 
-  bool hasStdExtCOrZca() const { return HasStdExtC || HasStdExtZca; }
+  inline __attribute__((always_inline)) bool hasStdExtCOrZca() const { return HasStdExtC || HasStdExtZca; }  
   bool hasStdExtCOrZcd() const { return HasStdExtC || HasStdExtZcd; }
   bool hasStdExtCOrZcfOrZce() const {
     return HasStdExtC || HasStdExtZcf || HasStdExtZce;
@@ -156,17 +156,16 @@ public:
     return HasStdExtZfhmin || HasStdExtZfbfmin;
   }
 
-  bool hasConditionalMoveFusion() const {
-    // Do we support fusing a branch+mv or branch+c.mv as a conditional move.
+  inline __attribute__((always_inline)) bool hasConditionalMoveFusion() const {    // Do we support fusing a branch+mv or branch+c.mv as a conditional move.
     return (hasConditionalCompressedMoveFusion() && hasStdExtCOrZca()) ||
            hasShortForwardBranchOpt();
   }
 
-  bool is64Bit() const { return IsRV64; }
+  inline __attribute__((always_inline)) bool is64Bit() const { return IsRV64; }  
   MVT getXLenVT() const {
     return is64Bit() ? MVT::i64 : MVT::i32;
   }
-  unsigned getXLen() const {
+  inline __attribute__((always_inline)) unsigned getXLen() const {    
     return is64Bit() ? 64 : 32;
   }
   unsigned getFLen() const {
@@ -221,17 +220,15 @@ public:
   }
 
   // Vector codegen related methods.
-  bool hasVInstructions() const { return HasStdExtZve32x; }
-  bool hasVInstructionsI64() const { return HasStdExtZve64x; }
-  bool hasVInstructionsF16Minimal() const { return HasStdExtZvfhmin; }
-  bool hasVInstructionsF16() const { return HasStdExtZvfh; }
-  bool hasVInstructionsBF16() const { return HasStdExtZvfbfmin; }
-  bool hasVInstructionsF32() const { return HasStdExtZve32f; }
-  bool hasVInstructionsF64() const { return HasStdExtZve64d; }
-  // F16 and F64 both require F32.
-  bool hasVInstructionsAnyF() const { return hasVInstructionsF32(); }
-  bool hasVInstructionsFullMultiply() const { return HasStdExtV; }
-  unsigned getMaxInterleaveFactor() const {
+ inline __attribute__((always_inline)) bool hasVInstructions() const { return HasStdExtZve32x; } 
+ inline __attribute__((always_inline)) bool hasVInstructionsI64() const { return HasStdExtZve64x; } 
+ inline __attribute__((always_inline)) bool hasVInstructionsF16Minimal() const { return HasStdExtZvfhmin; } 
+ inline __attribute__((always_inline)) bool hasVInstructionsF16() const { return HasStdExtZvfh; } 
+ inline __attribute__((always_inline)) bool hasVInstructionsBF16() const { return HasStdExtZvfbfmin; } 
+ inline __attribute__((always_inline)) bool hasVInstructionsF32() const { return HasStdExtZve32f; } 
+ inline __attribute__((always_inline)) bool hasVInstructionsF64() const { return HasStdExtZve64d; }  // F16 and F64 both require F32.
+ inline __attribute__((always_inline)) bool hasVInstructionsAnyF() const { return hasVInstructionsF32(); } 
+ inline __attribute__((always_inline)) bool hasVInstructionsFullMultiply() const { return HasStdExtV; }  unsigned getMaxInterleaveFactor() const {
     return hasVInstructions() ? MaxInterleaveFactor : 1;
   }
 

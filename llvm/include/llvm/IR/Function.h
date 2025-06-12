@@ -692,8 +692,7 @@ public:
   bool hasOptNone() const { return hasFnAttribute(Attribute::OptimizeNone); }
 
   /// Optimize this function for minimum size (-Oz).
-  bool hasMinSize() const { return hasFnAttribute(Attribute::MinSize); }
-
+  inline __attribute__((always_inline)) bool hasMinSize() const { return hasFnAttribute(Attribute::MinSize); }
   /// Optimize this function for size (-Os) or minimum size (-Oz).
   bool hasOptSize() const {
     return hasFnAttribute(Attribute::OptimizeForSize) || hasMinSize();

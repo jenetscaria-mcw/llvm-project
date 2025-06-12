@@ -189,8 +189,7 @@ template <typename T> struct TrailingZerosCounter<T, 4> {
 
 #if !defined(_MSC_VER) || defined(_M_X64)
 template <typename T> struct TrailingZerosCounter<T, 8> {
-  static unsigned count(T Val) {
-    if (Val == 0)
+ inline __attribute__((always_inline)) static unsigned count(T Val) {    if (Val == 0)
       return 64;
 
 #if __has_builtin(__builtin_ctzll) || defined(__GNUC__)
@@ -212,7 +211,8 @@ template <typename T> struct TrailingZerosCounter<T, 8> {
 /// Only unsigned integral types are allowed.
 ///
 /// Returns std::numeric_limits<T>::digits on an input of 0.
-template <typename T> [[nodiscard]] int countr_zero(T Val) {
+template <typename T> 
+[[nodiscard]] inline __attribute__((always_inline)) int countr_zero(T Val) {
   static_assert(std::is_unsigned_v<T>,
                 "Only unsigned integral types are allowed.");
   return llvm::detail::TrailingZerosCounter<T, sizeof(T)>::count(Val);
@@ -239,8 +239,7 @@ template <typename T, std::size_t SizeOfT> struct LeadingZerosCounter {
 
 #if defined(__GNUC__) || defined(_MSC_VER)
 template <typename T> struct LeadingZerosCounter<T, 4> {
-  static unsigned count(T Val) {
-    if (Val == 0)
+ inline __attribute__((always_inline)) static unsigned count(T Val) {    if (Val == 0)
       return 32;
 
 #if __has_builtin(__builtin_clz) || defined(__GNUC__)
@@ -255,8 +254,7 @@ template <typename T> struct LeadingZerosCounter<T, 4> {
 
 #if !defined(_MSC_VER) || defined(_M_X64)
 template <typename T> struct LeadingZerosCounter<T, 8> {
-  static unsigned count(T Val) {
-    if (Val == 0)
+ inline __attribute__((always_inline)) static unsigned count(T Val) {    if (Val == 0)
       return 64;
 
 #if __has_builtin(__builtin_clzll) || defined(__GNUC__)
@@ -277,8 +275,8 @@ template <typename T> struct LeadingZerosCounter<T, 8> {
 ///
 /// Only unsigned integral types are allowed.
 ///
-/// Returns std::numeric_limits<T>::digits on an input of 0.
-template <typename T> [[nodiscard]] int countl_zero(T Val) {
+ /// Returns std::numeric_limits<T>::digits on an input of 0.
+ template <typename T> [[nodiscard]] inline __attribute__((always_inline)) int countl_zero(T Val) {
   static_assert(std::is_unsigned_v<T>,
                 "Only unsigned integral types are allowed.");
   return llvm::detail::LeadingZerosCounter<T, sizeof(T)>::count(Val);
@@ -314,7 +312,7 @@ template <typename T> [[nodiscard]] int countr_one(T Value) {
 /// Returns 0 otherwise.
 ///
 /// Ex. bit_width(5) == 3.
-template <typename T> [[nodiscard]] int bit_width(T Value) {
+template <typename T> [[nodiscard]] inline __attribute__((always_inline)) int bit_width(T Value) {
   static_assert(std::is_unsigned_v<T>,
                 "Only unsigned integral types are allowed.");
   return std::numeric_limits<T>::digits - llvm::countl_zero(Value);
@@ -339,7 +337,8 @@ template <typename T> [[nodiscard]] T bit_floor(T Value) {
 ///
 /// The return value is undefined if the input is larger than the largest power
 /// of two representable in T.
-template <typename T> [[nodiscard]] T bit_ceil(T Value) {
+template <typename T> 
+[[nodiscard]] inline __attribute__((always_inline)) T bit_ceil(T Value) {
   static_assert(std::is_unsigned_v<T>,
                 "Only unsigned integral types are allowed.");
   if (Value < 2)

@@ -124,8 +124,7 @@ public:
 
   iterator begin() { return ++iterator(Sentinel); }
   const_iterator begin() const { return ++const_iterator(Sentinel); }
-  iterator end() { return iterator(Sentinel); }
-  const_iterator end() const { return const_iterator(Sentinel); }
+ inline __attribute__((always_inline)) iterator end() { return iterator(Sentinel); }  const_iterator end() const { return const_iterator(Sentinel); }
   reverse_iterator rbegin() { return ++reverse_iterator(Sentinel); }
   const_reverse_iterator rbegin() const {
     return ++const_reverse_iterator(Sentinel);

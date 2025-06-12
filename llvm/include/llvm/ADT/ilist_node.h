@@ -113,8 +113,7 @@ private:
     return static_cast<ilist_node_impl *>(node_base_type::getPrev());
   }
 
-  ilist_node_impl *getNext() {
-    return static_cast<ilist_node_impl *>(node_base_type::getNext());
+ inline __attribute__((always_inline)) ilist_node_impl *getNext() {    return static_cast<ilist_node_impl *>(node_base_type::getNext());
   }
 
   const ilist_node_impl *getPrev() const {
@@ -129,8 +128,7 @@ private:
   void setNext(ilist_node_impl *N) { node_base_type::setNext(N); }
 
 public:
-  self_iterator getIterator() { return self_iterator(*this); }
-  const_self_iterator getIterator() const { return const_self_iterator(*this); }
+ inline __attribute__((always_inline)) self_iterator getIterator() { return self_iterator(*this); }  const_self_iterator getIterator() const { return const_self_iterator(*this); }
 
   reverse_self_iterator getReverseIterator() {
     return reverse_self_iterator(*this);
@@ -228,14 +226,12 @@ namespace ilist_detail {
 struct NodeAccess {
 protected:
   template <class OptionsT>
-  static ilist_node_impl<OptionsT> *getNodePtr(typename OptionsT::pointer N) {
-    return N;
+ inline __attribute__((always_inline)) static ilist_node_impl<OptionsT> *getNodePtr(typename OptionsT::pointer N) {    return N;
   }
 
   template <class OptionsT>
-  static const ilist_node_impl<OptionsT> *
-  getNodePtr(typename OptionsT::const_pointer N) {
-    return N;
+  inline __attribute__((always_inline)) static const ilist_node_impl<OptionsT> *
+  getNodePtr(typename OptionsT::const_pointer N) {    return N;
   }
 
   template <class OptionsT>
@@ -278,12 +274,10 @@ protected:
   using const_pointer = typename OptionsT::const_pointer;
   using node_type = ilist_node_impl<OptionsT>;
 
-  static node_type *getNodePtr(pointer N) {
-    return NodeAccess::getNodePtr<OptionsT>(N);
+  inline __attribute__((always_inline)) static node_type *getNodePtr(pointer N) {    return NodeAccess::getNodePtr<OptionsT>(N);
   }
 
-  static const node_type *getNodePtr(const_pointer N) {
-    return NodeAccess::getNodePtr<OptionsT>(N);
+  inline __attribute__((always_inline)) static const node_type *getNodePtr(const_pointer N) {    return NodeAccess::getNodePtr<OptionsT>(N);
   }
 
   static pointer getValuePtr(node_type *N) {

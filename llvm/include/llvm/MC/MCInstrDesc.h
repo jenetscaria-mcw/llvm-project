@@ -248,8 +248,7 @@ public:
   unsigned getNumDefs() const { return NumDefs; }
 
   /// Return flags of this instruction.
-  uint64_t getFlags() const { return Flags; }
-
+  inline __attribute__((always_inline)) uint64_t getFlags() const { return Flags; }
   /// \returns true if this instruction is emitted before instruction selection
   /// and should be legalized/regbankselected/selected.
   bool isPreISelOpcode() const { return Flags & (1ULL << MCID::PreISelOpcode); }
@@ -444,7 +443,7 @@ public:
   bool mayStore() const { return Flags & (1ULL << MCID::MayStore); }
 
   /// Return true if this instruction may raise a floating-point exception.
-  bool mayRaiseFPException() const {
+  inline __attribute__((always_inline)) bool mayRaiseFPException() const {    
     return Flags & (1ULL << MCID::MayRaiseFPException);
   }
 

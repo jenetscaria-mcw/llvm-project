@@ -312,7 +312,7 @@ public:
   /// If tracking isn't supported, \c *MD will not change.
   ///
   /// \return true iff tracking is supported by \c MD.
-  static bool track(Metadata *&MD) {
+  inline __attribute__((always_inline)) static bool track(Metadata *&MD) {    
     return track(&MD, *MD, static_cast<Metadata *>(nullptr));
   }
 
@@ -346,7 +346,7 @@ public:
   /// Stop tracking a reference to metadata.
   ///
   /// Stops \c *MD from tracking \c MD.
-  static void untrack(Metadata *&MD) { untrack(&MD, *MD); }
+  inline __attribute__((always_inline)) static void untrack(Metadata *&MD) { untrack(&MD, *MD); }  
   static void untrack(void *Ref, Metadata &MD);
 
   /// Move tracking from one reference to another.
@@ -758,7 +758,7 @@ public:
 /// A collection of metadata nodes that might be associated with a
 /// memory access used by the alias-analysis infrastructure.
 struct AAMDNodes {
-  explicit AAMDNodes() = default;
+  inline __attribute__((always_inline)) explicit AAMDNodes() = default;  
   explicit AAMDNodes(MDNode *T, MDNode *TS, MDNode *S, MDNode *N)
       : TBAA(T), TBAAStruct(TS), Scope(S), NoAlias(N) {}
 

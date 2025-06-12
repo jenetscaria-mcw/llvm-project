@@ -78,7 +78,8 @@ constexpr float ef          = 2.71828183F, // (0x1.5bf0a8P+1) https://oeis.org/A
 
 /// Create a bitmask with the N right-most bits set to 1, and all other
 /// bits set to 0.  Only unsigned types are allowed.
-template <typename T> T maskTrailingOnes(unsigned N) {
+template <typename T> 
+inline __attribute__((always_inline)) T maskTrailingOnes(unsigned N) {
   static_assert(std::is_unsigned_v<T>, "Invalid type!");
   const unsigned Bits = CHAR_BIT * sizeof(T);
   assert(N <= Bits && "Invalid bit index");
@@ -88,14 +89,15 @@ template <typename T> T maskTrailingOnes(unsigned N) {
 }
 
 /// Create a bitmask with the N left-most bits set to 1, and all other
-/// bits set to 0.  Only unsigned types are allowed.
-template <typename T> T maskLeadingOnes(unsigned N) {
+ /// bits set to 0. Only unsigned types are allowed.
+template <typename T> inline __attribute__((always_inline)) T maskLeadingOnes(unsigned N) {
   return ~maskTrailingOnes<T>(CHAR_BIT * sizeof(T) - N);
 }
 
 /// Create a bitmask with the N right-most bits set to 0, and all other
 /// bits set to 1.  Only unsigned types are allowed.
-template <typename T> T maskTrailingZeros(unsigned N) {
+template <typename T> 
+inline __attribute__((always_inline)) T maskTrailingZeros(unsigned N) {
   return maskLeadingOnes<T>(CHAR_BIT * sizeof(T) - N);
 }
 
@@ -165,8 +167,8 @@ constexpr uint64_t Make_64(uint32_t High, uint32_t Low) {
   return ((uint64_t)High << 32) | (uint64_t)Low;
 }
 
-/// Checks if an integer fits into the given bit width.
-template <unsigned N> constexpr bool isInt(int64_t x) {
+ /// Checks if an integer fits into the given bit width.
+template <unsigned N> inline __attribute__((always_inline)) constexpr bool isInt(int64_t x) {
   if constexpr (N == 0)
     return 0 == x;
   if constexpr (N == 8)
@@ -183,14 +185,15 @@ template <unsigned N> constexpr bool isInt(int64_t x) {
 
 /// Checks if a signed integer is an N bit number shifted left by S.
 template <unsigned N, unsigned S>
-constexpr bool isShiftedInt(int64_t x) {
+inline __attribute__((always_inline))  constexpr bool isShiftedInt(int64_t x) {
   static_assert(S < 64, "isShiftedInt<N, S> with S >= 64 is too much.");
   static_assert(N + S <= 64, "isShiftedInt<N, S> with N + S > 64 is too wide.");
   return isInt<N + S>(x) && (x % (UINT64_C(1) << S) == 0);
 }
 
 /// Checks if an unsigned integer fits into the given bit width.
-template <unsigned N> constexpr bool isUInt(uint64_t x) {
+template <unsigned N> 
+inline __attribute__((always_inline)) constexpr bool isUInt(uint64_t x) {
   if constexpr (N == 0)
     return 0 == x;
   if constexpr (N == 8)
@@ -207,7 +210,7 @@ template <unsigned N> constexpr bool isUInt(uint64_t x) {
 
 /// Checks if a unsigned integer is an N bit number shifted left by S.
 template <unsigned N, unsigned S>
-constexpr bool isShiftedUInt(uint64_t x) {
+inline __attribute__((always_inline))  constexpr bool isShiftedUInt(uint64_t x) {
   static_assert(S < 64, "isShiftedUInt<N, S> with S >= 64 is too much.");
   static_assert(N + S <= 64,
                 "isShiftedUInt<N, S> with N + S > 64 is too wide.");
@@ -268,9 +271,9 @@ constexpr bool isMask_32(uint32_t Value) {
   return Value && ((Value + 1) & Value) == 0;
 }
 
-/// Return true if the argument is a non-empty sequence of ones starting at the
+ /// Return true if the argument is a non-empty sequence of ones starting at the
 /// least significant bit with the remainder zero (64 bit version).
-constexpr bool isMask_64(uint64_t Value) {
+inline __attribute__((always_inline)) constexpr bool isMask_64(uint64_t Value) {
   return Value && ((Value + 1) & Value) == 0;
 }
 
@@ -280,20 +283,18 @@ constexpr bool isShiftedMask_32(uint32_t Value) {
   return Value && isMask_32((Value - 1) | Value);
 }
 
-/// Return true if the argument contains a non-empty sequence of ones with the
-/// remainder zero (64 bit version.)
-constexpr bool isShiftedMask_64(uint64_t Value) {
+/// Return true if the argument contains a non-empty sequence of ones with the/// remainder zero (64 bit version.)
+inline __attribute__((always_inline)) constexpr bool isShiftedMask_64(uint64_t Value) {
   return Value && isMask_64((Value - 1) | Value);
 }
 
-/// Return true if the argument is a power of two > 0.
-/// Ex. isPowerOf2_32(0x00100000U) == true (32 bit edition.)
-constexpr bool isPowerOf2_32(uint32_t Value) {
+/// Return true if the argument is a power of two > 0./// Ex. isPowerOf2_32(0x00100000U) == true (32 bit edition.)
+inline __attribute__((always_inline))  constexpr bool isPowerOf2_32(uint32_t Value) {
   return llvm::has_single_bit(Value);
 }
 
 /// Return true if the argument is a power of two > 0 (64 bit edition.)
-constexpr bool isPowerOf2_64(uint64_t Value) {
+inline __attribute__((always_inline))  constexpr bool isPowerOf2_64(uint64_t Value) {
   return llvm::has_single_bit(Value);
 }
 
@@ -334,10 +335,9 @@ template <size_t kValue> constexpr size_t CTLog2() {
 
 template <> constexpr size_t CTLog2<1>() { return 0; }
 
-/// Return the floor log base 2 of the specified value, -1 if the value is zero.
-/// (32 bit edition.)
+/// Return the floor log base 2 of the specified value, -1 if the value is zero./// (32 bit edition.)
 /// Ex. Log2_32(32) == 5, Log2_32(1) == 0, Log2_32(0) == -1, Log2_32(6) == 2
-inline unsigned Log2_32(uint32_t Value) {
+inline __attribute__((always_inline))  unsigned Log2_32(uint32_t Value) {
   return 31 - llvm::countl_zero(Value);
 }
 
@@ -377,9 +377,9 @@ constexpr uint64_t MinAlign(uint64_t A, uint64_t B) {
   return (A | B) & (1 + ~(A | B));
 }
 
-/// Returns the next power of two (in 64-bits) that is strictly greater than A.
+ /// Returns the next power of two (in 64-bits) that is strictly greater than A.
 /// Returns zero on overflow.
-constexpr uint64_t NextPowerOf2(uint64_t A) {
+inline __attribute__((always_inline))  constexpr uint64_t NextPowerOf2(uint64_t A) {
   A |= (A >> 1);
   A |= (A >> 2);
   A |= (A >> 4);
@@ -570,7 +570,7 @@ inline int32_t SignExtend32(uint32_t X, unsigned B) {
 
 /// Sign-extend the number in the bottom B bits of X to a 64-bit integer.
 /// Requires B <= 64.
-template <unsigned B> constexpr int64_t SignExtend64(uint64_t x) {
+template <unsigned B> inline __attribute__((always_inline))  constexpr int64_t SignExtend64(uint64_t x) {
   static_assert(B <= 64, "Bit width out of range.");
   if constexpr (B == 0)
     return 0;

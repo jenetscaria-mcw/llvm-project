@@ -59,9 +59,8 @@ namespace pointer_union_detail {
   class PointerUnionMembers<Derived, ValTy, I> {
   protected:
     ValTy Val;
-    PointerUnionMembers() = default;
-    PointerUnionMembers(ValTy Val) : Val(Val) {}
-
+ inline __attribute__((always_inline)) PointerUnionMembers() = default; 
+ inline __attribute__((always_inline)) PointerUnionMembers(ValTy Val) : Val(Val) {}
     friend struct PointerLikeTypeTraits<Derived>;
   };
 
@@ -72,12 +71,11 @@ namespace pointer_union_detail {
     using Base = PointerUnionMembers<Derived, ValTy, I + 1, Types...>;
   public:
     using Base::Base;
-    PointerUnionMembers() = default;
-    PointerUnionMembers(Type V)
+ inline __attribute__((always_inline)) PointerUnionMembers() = default;    
+ inline __attribute__((always_inline)) PointerUnionMembers(Type V)
         : Base(ValTy(const_cast<void *>(
                          PointerLikeTypeTraits<Type>::getAsVoidPointer(V)),
-                     I)) {}
-
+       I)) {}
     using Base::operator=;
     Derived &operator=(Type V) {
       this->Val = ValTy(
@@ -132,10 +130,8 @@ class PointerUnion
   friend struct CastInfoPointerUnionImpl<PTs...>;
 
 public:
-  PointerUnion() = default;
-
-  PointerUnion(std::nullptr_t) : PointerUnion() {}
-  using Base::Base;
+ inline __attribute__((always_inline)) PointerUnion() = default;
+ inline __attribute__((always_inline)) PointerUnion(std::nullptr_t) : PointerUnion() {}  using Base::Base;
 
   /// Test if the pointer held in the union is null, regardless of
   /// which type it is.
@@ -190,8 +186,7 @@ public:
   /// Assignment from elements of the union.
   using Base::operator=;
 
-  void *getOpaqueValue() const { return this->Val.getOpaqueValue(); }
-  static inline PointerUnion getFromOpaqueValue(void *VP) {
+ inline __attribute__((always_inline)) void *getOpaqueValue() const { return this->Val.getOpaqueValue(); }  static inline PointerUnion getFromOpaqueValue(void *VP) {
     PointerUnion V;
     V.Val = decltype(V.Val)::getFromOpaqueValue(VP);
     return V;
@@ -204,8 +199,7 @@ bool operator==(PointerUnion<PTs...> lhs, PointerUnion<PTs...> rhs) {
 }
 
 template <typename ...PTs>
-bool operator!=(PointerUnion<PTs...> lhs, PointerUnion<PTs...> rhs) {
-  return lhs.getOpaqueValue() != rhs.getOpaqueValue();
+inline __attribute__((always_inline)) bool operator!=(PointerUnion<PTs...> lhs, PointerUnion<PTs...> rhs) {  return lhs.getOpaqueValue() != rhs.getOpaqueValue();
 }
 
 template <typename ...PTs>
@@ -230,7 +224,8 @@ template <typename... PTs> struct CastInfoPointerUnionImpl {
     return F.Val.getInt() == FirstIndexOfType<To, PTs...>::value;
   }
 
-  template <typename To> static To doCast(From &F) {
+ template <typename To> 
+inline __attribute__((always_inline)) static To doCast(From &F) {
     assert(isPossible<To>(F) && "cast to an incompatible type!");
     return PointerLikeTypeTraits<To>::getFromVoidPointer(F.Val.getPointer());
   }
@@ -248,7 +243,7 @@ struct CastInfo<To, PointerUnion<PTs...>>
     return Impl::template isPossible<To>(f);
   }
 
-  static To doCast(From &f) { return Impl::template doCast<To>(f); }
+inline __attribute__((always_inline))   static To doCast(From &f) { return Impl::template doCast<To>(f); }
 
   static inline To castFailed() { return To(); }
 };

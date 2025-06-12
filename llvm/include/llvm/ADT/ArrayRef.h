@@ -64,8 +64,7 @@ namespace llvm {
     /// @{
 
     /// Construct an empty ArrayRef.
-    /*implicit*/ ArrayRef() = default;
-
+    /*implicit*/ inline __attribute__((always_inline)) ArrayRef() = default;
     /// Construct an empty ArrayRef from std::nullopt.
     /*implicit*/ ArrayRef(std::nullopt_t) {}
 
@@ -74,9 +73,8 @@ namespace llvm {
       : Data(&OneElt), Length(1) {}
 
     /// Construct an ArrayRef from a pointer and length.
-    constexpr /*implicit*/ ArrayRef(const T *data, size_t length)
-        : Data(data), Length(length) {}
-
+    inline __attribute__((always_inline)) constexpr /*implicit*/ ArrayRef(const T *data, size_t length)
+            : Data(data), Length(length) {}
     /// Construct an ArrayRef from a range.
     constexpr ArrayRef(const T *begin, const T *end)
         : Data(begin), Length(end - begin) {
@@ -113,9 +111,9 @@ namespace llvm {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Winit-list-lifetime"
 #endif
-    constexpr /*implicit*/ ArrayRef(const std::initializer_list<T> &Vec)
+    inline __attribute__((always_inline)) constexpr /*implicit*/ ArrayRef(const std::initializer_list<T> &Vec)
         : Data(Vec.begin() == Vec.end() ? (T *)nullptr : Vec.begin()),
-          Length(Vec.size()) {}
+    Length(Vec.size()) {}
 #if LLVM_GNUC_PREREQ(9, 0, 0)
 #pragma GCC diagnostic pop
 #endif
@@ -150,9 +148,8 @@ namespace llvm {
     /// @name Simple Operations
     /// @{
 
-    iterator begin() const { return Data; }
-    iterator end() const { return Data + Length; }
-
+    inline __attribute__((always_inline)) iterator begin() const { return Data; } 
+    inline __attribute__((always_inline)) iterator end() const { return Data + Length; }
     reverse_iterator rbegin() const { return reverse_iterator(end()); }
     reverse_iterator rend() const { return reverse_iterator(begin()); }
 
@@ -162,8 +159,7 @@ namespace llvm {
     const T *data() const { return Data; }
 
     /// size - Get the array size.
-    size_t size() const { return Length; }
-
+    inline __attribute__((always_inline)) size_t size() const { return Length; }
     /// front - Get the first element.
     const T &front() const {
       assert(!empty());

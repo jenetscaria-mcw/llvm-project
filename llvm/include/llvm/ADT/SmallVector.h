@@ -61,9 +61,8 @@ protected:
   }
 
   SmallVectorBase() = delete;
-  SmallVectorBase(void *FirstEl, size_t TotalCapacity)
-      : BeginX(FirstEl), Capacity(static_cast<Size_T>(TotalCapacity)) {}
-
+  inline __attribute__((always_inline)) SmallVectorBase(void *FirstEl, size_t TotalCapacity)
+   : BeginX(FirstEl), Capacity(static_cast<Size_T>(TotalCapacity)) {}
   /// This is a helper for \a grow() that's out of line to reduce code
   /// duplication.  This function will report a fatal error if it can't grow at
   /// least to \p MinSize.
@@ -89,18 +88,15 @@ protected:
                           size_t VSize = 0);
 
 public:
-  size_t size() const { return Size; }
-  size_t capacity() const { return Capacity; }
-
-  [[nodiscard]] bool empty() const { return !Size; }
-
+ inline __attribute__((always_inline)) size_t size() const { return Size; } 
+ inline __attribute__((always_inline)) size_t capacity() const { return Capacity; }
+ [[nodiscard]] inline __attribute__((always_inline)) bool empty() const { return !Size; }
 protected:
   /// Set the array size to \p N, which the current array must have enough
   /// capacity for.
   ///
   /// This does not construct or destroy any elements in the vector.
-  void set_size(size_t N) {
-    assert(N <= capacity()); // implies no overflow in assignment
+ inline __attribute__((always_inline)) void set_size(size_t N) {    assert(N <= capacity()); // implies no overflow in assignment
     Size = static_cast<Size_T>(N);
   }
 
@@ -139,26 +135,21 @@ protected:
   /// Find the address of the first element.  For this pointer math to be valid
   /// with small-size of 0 for T with lots of alignment, it's important that
   /// SmallVectorStorage is properly-aligned even for small-size of 0.
-  void *getFirstEl() const {
-    return const_cast<void *>(reinterpret_cast<const void *>(
+ inline __attribute__((always_inline)) void *getFirstEl() const {    return const_cast<void *>(reinterpret_cast<const void *>(
         reinterpret_cast<const char *>(this) +
         offsetof(SmallVectorAlignmentAndSize<T>, FirstEl)));
   }
   // Space after 'FirstEl' is clobbered, do not add any instance vars after it.
 
-  SmallVectorTemplateCommon(size_t Size) : Base(getFirstEl(), Size) {}
-
-  void grow_pod(size_t MinSize, size_t TSize) {
-    Base::grow_pod(getFirstEl(), MinSize, TSize);
+ inline __attribute__((always_inline)) SmallVectorTemplateCommon(size_t Size) : Base(getFirstEl(), Size) {}
+ inline __attribute__((always_inline)) void grow_pod(size_t MinSize, size_t TSize) {    Base::grow_pod(getFirstEl(), MinSize, TSize);
   }
 
   /// Return true if this is a smallvector which has not had dynamic
   /// memory allocated for it.
-  bool isSmall() const { return this->BeginX == getFirstEl(); }
-
+ inline __attribute__((always_inline)) bool isSmall() const { return this->BeginX == getFirstEl(); }
   /// Put this vector in a state of being small.
-  void resetToSmall() {
-    this->BeginX = getFirstEl();
+ inline __attribute__((always_inline)) void resetToSmall() {    this->BeginX = getFirstEl();
     this->Size = this->Capacity = 0; // FIXME: Setting Capacity to 0 is suspect.
   }
 
@@ -199,16 +190,14 @@ protected:
   }
 
   /// Check whether Elt will be invalidated by resizing the vector to NewSize.
-  void assertSafeToReferenceAfterResize(const void *Elt, size_t NewSize) {
-    assert(isSafeToReferenceAfterResize(Elt, NewSize) &&
+ inline __attribute__((always_inline)) void assertSafeToReferenceAfterResize(const void *Elt, size_t NewSize) {    assert(isSafeToReferenceAfterResize(Elt, NewSize) &&
            "Attempting to reference an element of the vector in an operation "
            "that invalidates it");
   }
 
   /// Check whether Elt will be invalidated by increasing the size of the
   /// vector by N.
-  void assertSafeToAdd(const void *Elt, size_t N = 1) {
-    this->assertSafeToReferenceAfterResize(Elt, this->size() + N);
+ inline __attribute__((always_inline)) void assertSafeToAdd(const void *Elt, size_t N = 1) {    this->assertSafeToReferenceAfterResize(Elt, this->size() + N);
   }
 
   /// Check whether any part of the range will be invalidated by clearing.
@@ -225,8 +214,7 @@ protected:
   void assertSafeToReferenceAfterClear(ItTy, ItTy) {}
 
   /// Check whether any part of the range will be invalidated by growing.
-  void assertSafeToAddRange(const T *From, const T *To) {
-    if (From == To)
+ inline __attribute__((always_inline)) void assertSafeToAddRange(const T *From, const T *To) {    if (From == To)
       return;
     this->assertSafeToAdd(From, To - From);
     this->assertSafeToAdd(To - 1, To - From);
@@ -240,9 +228,8 @@ protected:
   /// Reserve enough space to add one element, and return the updated element
   /// pointer in case it was a reference to the storage.
   template <class U>
-  static const T *reserveForParamAndGetAddressImpl(U *This, const T &Elt,
-                                                   size_t N) {
-    size_t NewSize = This->size() + N;
+  inline __attribute__((always_inline)) static const T *reserveForParamAndGetAddressImpl(U *This, const T &Elt,
+              size_t N) {    size_t NewSize = This->size() + N;
     if (LLVM_LIKELY(NewSize <= This->capacity()))
       return &Elt;
 
@@ -278,11 +265,10 @@ public:
   using Base::size;
 
   // forward iterator creation methods.
-  iterator begin() { return (iterator)this->BeginX; }
-  const_iterator begin() const { return (const_iterator)this->BeginX; }
-  iterator end() { return begin() + size(); }
-  const_iterator end() const { return begin() + size(); }
-
+ inline __attribute__((always_inline)) iterator begin() { return (iterator)this->BeginX; } 
+ inline __attribute__((always_inline)) const_iterator begin() const { return (const_iterator)this->BeginX; } 
+ inline __attribute__((always_inline)) iterator end() { return begin() + size(); } 
+ inline __attribute__((always_inline)) const_iterator end() const { return begin() + size(); }
   // reverse iterator creation methods.
   reverse_iterator rbegin()            { return reverse_iterator(end()); }
   const_reverse_iterator rbegin() const{ return const_reverse_iterator(end()); }
@@ -301,12 +287,10 @@ public:
   /// Return a pointer to the vector's buffer, even if empty().
   const_pointer data() const { return const_pointer(begin()); }
 
-  reference operator[](size_type idx) {
-    assert(idx < size());
+ inline __attribute__((always_inline)) reference operator[](size_type idx) {    assert(idx < size());
     return begin()[idx];
   }
-  const_reference operator[](size_type idx) const {
-    assert(idx < size());
+ inline __attribute__((always_inline)) const_reference operator[](size_type idx) const {    assert(idx < size());
     return begin()[idx];
   }
 
@@ -319,8 +303,7 @@ public:
     return begin()[0];
   }
 
-  reference back() {
-    assert(!empty());
+ inline __attribute__((always_inline)) reference back() {    assert(!empty());
     return end()[-1];
   }
   const_reference back() const {
@@ -347,10 +330,8 @@ protected:
   static constexpr bool TakesParamByValue = false;
   using ValueParamT = const T &;
 
-  SmallVectorTemplateBase(size_t Size) : SmallVectorTemplateCommon<T>(Size) {}
-
-  static void destroy_range(T *S, T *E) {
-    while (S != E) {
+ inline __attribute__((always_inline)) SmallVectorTemplateBase(size_t Size) : SmallVectorTemplateCommon<T>(Size) {}
+ inline __attribute__((always_inline)) static void destroy_range(T *S, T *E) {    while (S != E) {
       --E;
       E->~T();
     }
@@ -359,15 +340,13 @@ protected:
   /// Move the range [I, E) into the uninitialized memory starting with "Dest",
   /// constructing elements as needed.
   template<typename It1, typename It2>
-  static void uninitialized_move(It1 I, It1 E, It2 Dest) {
-    std::uninitialized_move(I, E, Dest);
+ inline __attribute__((always_inline)) static void uninitialized_move(It1 I, It1 E, It2 Dest) {    std::uninitialized_move(I, E, Dest);
   }
 
   /// Copy the range [I, E) onto the uninitialized memory starting with "Dest",
   /// constructing elements as needed.
   template<typename It1, typename It2>
-  static void uninitialized_copy(It1 I, It1 E, It2 Dest) {
-    std::uninitialized_copy(I, E, Dest);
+ inline __attribute__((always_inline)) static void uninitialized_copy(It1 I, It1 E, It2 Dest) {    std::uninitialized_copy(I, E, Dest);
   }
 
   /// Grow the allocated memory (without initializing new elements), doubling
@@ -444,17 +423,15 @@ public:
 
 // Define this out-of-line to dissuade the C++ compiler from inlining it.
 template <typename T, bool TriviallyCopyable>
-void SmallVectorTemplateBase<T, TriviallyCopyable>::grow(size_t MinSize) {
-  size_t NewCapacity;
+inline __attribute__((always_inline)) void SmallVectorTemplateBase<T, TriviallyCopyable>::grow(size_t MinSize) {  size_t NewCapacity;
   T *NewElts = mallocForGrow(MinSize, NewCapacity);
   moveElementsForGrow(NewElts);
   takeAllocationForGrow(NewElts, NewCapacity);
 }
 
 template <typename T, bool TriviallyCopyable>
-T *SmallVectorTemplateBase<T, TriviallyCopyable>::mallocForGrow(
-    size_t MinSize, size_t &NewCapacity) {
-  return static_cast<T *>(
+inline __attribute__((always_inline))  T *SmallVectorTemplateBase<T, TriviallyCopyable>::mallocForGrow(
+ size_t MinSize, size_t &NewCapacity) {  return static_cast<T *>(
       SmallVectorBase<SmallVectorSizeType<T>>::mallocForGrow(
           this->getFirstEl(), MinSize, sizeof(T), NewCapacity));
 }
@@ -472,9 +449,8 @@ void SmallVectorTemplateBase<T, TriviallyCopyable>::moveElementsForGrow(
 
 // Define this out-of-line to dissuade the C++ compiler from inlining it.
 template <typename T, bool TriviallyCopyable>
-void SmallVectorTemplateBase<T, TriviallyCopyable>::takeAllocationForGrow(
-    T *NewElts, size_t NewCapacity) {
-  // If this wasn't grown from the inline copy, deallocate the old space.
+inline __attribute__((always_inline)) void SmallVectorTemplateBase<T, TriviallyCopyable>::takeAllocationForGrow(
+ T *NewElts, size_t NewCapacity) {  // If this wasn't grown from the inline copy, deallocate the old space.
   if (!this->isSmall())
     free(this->begin());
 
@@ -498,11 +474,9 @@ protected:
   /// parameters by value.
   using ValueParamT = std::conditional_t<TakesParamByValue, T, const T &>;
 
-  SmallVectorTemplateBase(size_t Size) : SmallVectorTemplateCommon<T>(Size) {}
-
+ inline __attribute__((always_inline)) SmallVectorTemplateBase(size_t Size) : SmallVectorTemplateCommon<T>(Size) {}
   // No need to do a destroy loop for POD's.
-  static void destroy_range(T *, T *) {}
-
+ inline __attribute__((always_inline)) static void destroy_range(T *, T *) {}
   /// Move the range [I, E) onto the uninitialized memory
   /// starting with "Dest", constructing elements into it as needed.
   template<typename It1, typename It2>
@@ -536,8 +510,7 @@ protected:
 
   /// Double the size of the allocated memory, guaranteeing space for at
   /// least one more element or MinSize if specified.
-  void grow(size_t MinSize = 0) { this->grow_pod(MinSize, sizeof(T)); }
-
+ inline __attribute__((always_inline)) void grow(size_t MinSize = 0) { this->grow_pod(MinSize, sizeof(T)); }
   /// Reserve enough space to add one element, and return the updated element
   /// pointer in case it was a reference to the storage.
   const T *reserveForParamAndGetAddress(const T &Elt, size_t N = 1) {
@@ -546,8 +519,7 @@ protected:
 
   /// Reserve enough space to add one element, and return the updated element
   /// pointer in case it was a reference to the storage.
-  T *reserveForParamAndGetAddress(T &Elt, size_t N = 1) {
-    return const_cast<T *>(
+ inline __attribute__((always_inline)) T *reserveForParamAndGetAddress(T &Elt, size_t N = 1) {    return const_cast<T *>(
         this->reserveForParamAndGetAddressImpl(this, Elt, N));
   }
 
@@ -572,14 +544,12 @@ protected:
   }
 
 public:
-  void push_back(ValueParamT Elt) {
-    const T *EltPtr = reserveForParamAndGetAddress(Elt);
+ inline __attribute__((always_inline)) void push_back(ValueParamT Elt) {    const T *EltPtr = reserveForParamAndGetAddress(Elt);
     memcpy(reinterpret_cast<void *>(this->end()), EltPtr, sizeof(T));
     this->set_size(this->size() + 1);
   }
 
-  void pop_back() { this->set_size(this->size() - 1); }
-};
+ inline __attribute__((always_inline)) void pop_back() { this->set_size(this->size() - 1); }};
 
 /// This class consists of common code factored out of the SmallVector class to
 /// reduce code duplication based on the SmallVector 'N' template parameter.
@@ -598,9 +568,8 @@ protected:
   using ValueParamT = typename SuperClass::ValueParamT;
 
   // Default ctor - Initialize to empty.
-  explicit SmallVectorImpl(unsigned N)
-      : SmallVectorTemplateBase<T>(N) {}
-
+  inline __attribute__((always_inline)) explicit SmallVectorImpl(unsigned N)
+   : SmallVectorTemplateBase<T>(N) {}
   void assignRemote(SmallVectorImpl &&RHS) {
     this->destroy_range(this->begin(), this->end());
     if (!this->isSmall())
@@ -611,8 +580,7 @@ protected:
     RHS.resetToSmall();
   }
 
-  ~SmallVectorImpl() {
-    // Subclass has already destructed this vector's elements.
+ inline __attribute__((always_inline)) ~SmallVectorImpl() {    // Subclass has already destructed this vector's elements.
     // If this wasn't grown from the inline copy, deallocate the old space.
     if (!this->isSmall())
       free(this->begin());
@@ -621,8 +589,7 @@ protected:
 public:
   SmallVectorImpl(const SmallVectorImpl &) = delete;
 
-  void clear() {
-    this->destroy_range(this->begin(), this->end());
+ inline __attribute__((always_inline)) void clear() {    this->destroy_range(this->begin(), this->end());
     this->Size = 0;
   }
 
@@ -630,7 +597,8 @@ private:
   // Make set_size() private to avoid misuse in subclasses.
   using SuperClass::set_size;
 
-  template <bool ForOverwrite> void resizeImpl(size_type N) {
+ template <bool ForOverwrite> 
+inline __attribute__((always_inline)) void resizeImpl(size_type N) {
     if (N == this->size())
       return;
 
@@ -649,20 +617,17 @@ private:
   }
 
 public:
-  void resize(size_type N) { resizeImpl<false>(N); }
-
+ inline __attribute__((always_inline)) void resize(size_type N) { resizeImpl<false>(N); }
   /// Like resize, but \ref T is POD, the new values won't be initialized.
   void resize_for_overwrite(size_type N) { resizeImpl<true>(N); }
 
   /// Like resize, but requires that \p N is less than \a size().
-  void truncate(size_type N) {
-    assert(this->size() >= N && "Cannot increase size with truncate");
+ inline __attribute__((always_inline)) void truncate(size_type N) {    assert(this->size() >= N && "Cannot increase size with truncate");
     this->destroy_range(this->begin() + N, this->end());
     this->set_size(N);
   }
 
-  void resize(size_type N, ValueParamT NV) {
-    if (N == this->size())
+ inline __attribute__((always_inline)) void resize(size_type N, ValueParamT NV) {    if (N == this->size())
       return;
 
     if (N < this->size()) {
@@ -674,8 +639,7 @@ public:
     this->append(N - this->size(), NV);
   }
 
-  void reserve(size_type N) {
-    if (this->capacity() < N)
+ inline __attribute__((always_inline)) void reserve(size_type N) {    if (this->capacity() < N)
       this->grow(N);
   }
 
@@ -684,8 +648,7 @@ public:
     truncate(this->size() - NumItems);
   }
 
-  [[nodiscard]] T pop_back_val() {
-    T Result = ::std::move(this->back());
+ [[nodiscard]] inline __attribute__((always_inline)) T pop_back_val() {    T Result = ::std::move(this->back());
     this->pop_back();
     return Result;
   }
@@ -709,8 +672,7 @@ public:
     this->set_size(this->size() + NumInputs);
   }
 
-  void append(std::initializer_list<T> IL) {
-    append(IL.begin(), IL.end());
+ inline __attribute__((always_inline)) void append(std::initializer_list<T> IL) {    append(IL.begin(), IL.end());
   }
 
   void append(const SmallVectorImpl &RHS) { append(RHS.begin(), RHS.end()); }
@@ -1209,10 +1171,8 @@ template <typename T,
 class LLVM_GSL_OWNER SmallVector : public SmallVectorImpl<T>,
                                    SmallVectorStorage<T, N> {
 public:
-  SmallVector() : SmallVectorImpl<T>(N) {}
-
-  ~SmallVector() {
-    // Destroy the constructed elements in the vector.
+ inline __attribute__((always_inline)) SmallVector() : SmallVectorImpl<T>(N) {}
+ inline __attribute__((always_inline)) ~SmallVector() {    // Destroy the constructed elements in the vector.
     this->destroy_range(this->begin(), this->end());
   }
 
@@ -1237,8 +1197,7 @@ public:
     this->append(R.begin(), R.end());
   }
 
-  SmallVector(std::initializer_list<T> IL) : SmallVectorImpl<T>(N) {
-    this->append(IL);
+ inline __attribute__((always_inline)) SmallVector(std::initializer_list<T> IL) : SmallVectorImpl<T>(N) {    this->append(IL);
   }
 
   template <typename U,
@@ -1252,8 +1211,7 @@ public:
       SmallVectorImpl<T>::operator=(RHS);
   }
 
-  SmallVector &operator=(const SmallVector &RHS) {
-    SmallVectorImpl<T>::operator=(RHS);
+ inline __attribute__((always_inline)) SmallVector &operator=(const SmallVector &RHS) {    SmallVectorImpl<T>::operator=(RHS);
     return *this;
   }
 

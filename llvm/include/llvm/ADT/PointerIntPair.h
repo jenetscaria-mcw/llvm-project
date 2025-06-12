@@ -34,18 +34,14 @@ template <typename Ptr> struct PunnedPointer {
   static_assert(std::is_trivially_copy_constructible<Ptr>::value, "");
   static_assert(std::is_trivially_move_constructible<Ptr>::value, "");
 
-  explicit constexpr PunnedPointer(intptr_t i = 0) { *this = i; }
-
-  constexpr intptr_t asInt() const {
-    intptr_t R = 0;
+ inline __attribute__((always_inline)) explicit constexpr PunnedPointer(intptr_t i = 0) { *this = i; }
+ inline __attribute__((always_inline)) constexpr intptr_t asInt() const {    intptr_t R = 0;
     std::memcpy(&R, Data, sizeof(R));
     return R;
   }
 
-  constexpr operator intptr_t() const { return asInt(); }
-
-  constexpr PunnedPointer &operator=(intptr_t V) {
-    std::memcpy(Data, &V, sizeof(Data));
+ inline __attribute__((always_inline)) constexpr operator intptr_t() const { return asInt(); }
+ inline __attribute__((always_inline)) constexpr PunnedPointer &operator=(intptr_t V) {    std::memcpy(Data, &V, sizeof(Data));
     return *this;
   }
 
@@ -83,18 +79,14 @@ class PointerIntPair {
   detail::PunnedPointer<PointerTy> Value;
 
 public:
-  constexpr PointerIntPair() = default;
-
-  PointerIntPair(PointerTy PtrVal, IntType IntVal) {
-    setPointerAndInt(PtrVal, IntVal);
+ inline __attribute__((always_inline)) constexpr PointerIntPair() = default;
+ inline __attribute__((always_inline)) PointerIntPair(PointerTy PtrVal, IntType IntVal) {    setPointerAndInt(PtrVal, IntVal);
   }
 
   explicit PointerIntPair(PointerTy PtrVal) { initWithPointer(PtrVal); }
 
-  PointerTy getPointer() const { return Info::getPointer(Value); }
-
-  IntType getInt() const { return (IntType)Info::getInt(Value); }
-
+ inline __attribute__((always_inline)) PointerTy getPointer() const { return Info::getPointer(Value); }
+ inline __attribute__((always_inline)) IntType getInt() const { return (IntType)Info::getInt(Value); }
   void setPointer(PointerTy PtrVal) & {
     Value = Info::updatePointer(Value, PtrVal);
   }
@@ -107,8 +99,7 @@ public:
     Value = Info::updatePointer(0, PtrVal);
   }
 
-  void setPointerAndInt(PointerTy PtrVal, IntType IntVal) & {
-    Value = Info::updateInt(Info::updatePointer(0, PtrVal),
+ inline __attribute__((always_inline)) void setPointerAndInt(PointerTy PtrVal, IntType IntVal) & {    Value = Info::updateInt(Info::updatePointer(0, PtrVal),
                             static_cast<intptr_t>(IntVal));
   }
 
@@ -123,8 +114,7 @@ public:
     return Value.getPointerAddress();
   }
 
-  void *getOpaqueValue() const {
-    return reinterpret_cast<void *>(Value.asInt());
+ inline __attribute__((always_inline)) void *getOpaqueValue() const {    return reinterpret_cast<void *>(Value.asInt());
   }
 
   void setFromOpaqueValue(void *Val) & {
@@ -187,17 +177,14 @@ struct PointerIntPairInfo {
     ShiftedIntMask = (uintptr_t)(IntMask << IntShift)
   };
 
-  static PointerT getPointer(intptr_t Value) {
-    return PtrTraits::getFromVoidPointer(
+ inline __attribute__((always_inline)) static PointerT getPointer(intptr_t Value) {    return PtrTraits::getFromVoidPointer(
         reinterpret_cast<void *>(Value & PointerBitMask));
   }
 
-  static intptr_t getInt(intptr_t Value) {
-    return (Value >> IntShift) & IntMask;
+ inline __attribute__((always_inline)) static intptr_t getInt(intptr_t Value) {    return (Value >> IntShift) & IntMask;
   }
 
-  static intptr_t updatePointer(intptr_t OrigValue, PointerT Ptr) {
-    intptr_t PtrWord =
+ inline __attribute__((always_inline)) static intptr_t updatePointer(intptr_t OrigValue, PointerT Ptr) {    intptr_t PtrWord =
         reinterpret_cast<intptr_t>(PtrTraits::getAsVoidPointer(Ptr));
     assert((PtrWord & ~PointerBitMask) == 0 &&
            "Pointer is not sufficiently aligned");
@@ -205,8 +192,7 @@ struct PointerIntPairInfo {
     return PtrWord | (OrigValue & ~PointerBitMask);
   }
 
-  static intptr_t updateInt(intptr_t OrigValue, intptr_t Int) {
-    intptr_t IntWord = static_cast<intptr_t>(Int);
+ inline __attribute__((always_inline)) static intptr_t updateInt(intptr_t OrigValue, intptr_t Int) {    intptr_t IntWord = static_cast<intptr_t>(Int);
     assert((IntWord & ~IntMask) == 0 && "Integer too large for field");
 
     // Preserve all bits other than the ones we are updating.

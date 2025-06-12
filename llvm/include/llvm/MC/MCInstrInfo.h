@@ -60,7 +60,7 @@ public:
 
   /// Return the machine instruction descriptor that corresponds to the
   /// specified instruction opcode.
-  const MCInstrDesc &get(unsigned Opcode) const {
+  inline __attribute__((always_inline)) const MCInstrDesc &get(unsigned Opcode) const {    
     assert(Opcode < NumOpcodes && "Invalid opcode!");
     // The table is indexed backwards from the last entry.
     return *(LastDesc - Opcode);

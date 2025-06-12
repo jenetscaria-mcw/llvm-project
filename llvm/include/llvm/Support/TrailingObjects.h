@@ -141,10 +141,10 @@ protected:
   // the TopTrailingObj, which is, via the
   // curiously-recurring-template-pattern, the most-derived type in
   // this recursion, and thus, contains all the overloads.
-  static const NextTy *
-  getTrailingObjectsImpl(const BaseTy *Obj,
-                         TrailingObjectsBase::OverloadToken<NextTy>) {
-    auto *Ptr = TopTrailingObj::getTrailingObjectsImpl(
+  inline __attribute__((always_inline)) static const NextTy *
+   getTrailingObjectsImpl(const BaseTy *Obj,
+       TrailingObjectsBase::OverloadToken<NextTy>) {    
+        auto *Ptr = TopTrailingObj::getTrailingObjectsImpl(
                     Obj, TrailingObjectsBase::OverloadToken<PrevTy>()) +
                 TopTrailingObj::callNumTrailingObjects(
                     Obj, TrailingObjectsBase::OverloadToken<PrevTy>());
@@ -232,15 +232,15 @@ class TrailingObjects : private trailing_objects_internal::TrailingObjectsImpl<
   // static_assert must be in a function, and not at class-level
   // because BaseTy isn't complete at class instantiation time, but
   // will be by the time this function is instantiated.
-  static void verifyTrailingObjectsAssertions() {
-    static_assert(std::is_final<BaseTy>(), "BaseTy must be final.");
+  inline __attribute__((always_inline)) static void verifyTrailingObjectsAssertions() {    
+  static_assert(std::is_final<BaseTy>(), "BaseTy must be final.");
   }
 
   // These two methods are the base of the recursion for this method.
-  static const BaseTy *
-  getTrailingObjectsImpl(const BaseTy *Obj,
-                         TrailingObjectsBase::OverloadToken<BaseTy>) {
-    return Obj;
+  inline __attribute__((always_inline)) static const BaseTy *
+   getTrailingObjectsImpl(const BaseTy *Obj,
+       TrailingObjectsBase::OverloadToken<BaseTy>) {    
+        return Obj;
   }
 
   static BaseTy *
@@ -256,16 +256,16 @@ class TrailingObjects : private trailing_objects_internal::TrailingObjectsImpl<
   // this function is that consumers only say "friend
   // TrailingObjects", and thus, only this class itself can call the
   // numTrailingObjects function.)
-  static size_t
+  inline __attribute__((always_inline)) static size_t
   callNumTrailingObjects(const BaseTy *Obj,
-                         TrailingObjectsBase::OverloadToken<BaseTy>) {
-    return 1;
+        TrailingObjectsBase::OverloadToken<BaseTy>) {    
+        return 1;
   }
 
   template <typename T>
-  static size_t callNumTrailingObjects(const BaseTy *Obj,
-                                       TrailingObjectsBase::OverloadToken<T>) {
-    return Obj->numTrailingObjects(TrailingObjectsBase::OverloadToken<T>());
+  inline __attribute__((always_inline)) static size_t callNumTrailingObjects(const BaseTy *Obj,
+          TrailingObjectsBase::OverloadToken<T>) {
+              return Obj->numTrailingObjects(TrailingObjectsBase::OverloadToken<T>());
   }
 
 public:
@@ -282,7 +282,8 @@ public:
   /// Returns a pointer to the trailing object array of the given type
   /// (which must be one of those specified in the class template). The
   /// array may have zero or more elements in it.
-  template <typename T> const T *getTrailingObjects() const {
+ template <typename T> 
+  inline __attribute__((always_inline)) const T *getTrailingObjects() const {
     verifyTrailingObjectsAssertions();
     // Forwards to an impl function with overloads, since member
     // function templates can't be specialized.

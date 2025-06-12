@@ -166,8 +166,7 @@ private:
 
   /// Contents union - This contains the payload for the various operand types.
   union ContentsUnion {
-    ContentsUnion() {}
-    MachineBasicBlock *MBB;  // For MO_MachineBasicBlock.
+ inline __attribute__((always_inline)) ContentsUnion() {}    MachineBasicBlock *MBB;  // For MO_MachineBasicBlock.
     const ConstantFP *CFP;   // For MO_FPImmediate.
     const ConstantInt *CI;   // For MO_CImmediate. Integers > 64bit.
     int64_t ImmVal;          // For MO_Immediate.
@@ -204,8 +203,8 @@ private:
     } OffsetedInfo;
   } Contents;
 
-  explicit MachineOperand(MachineOperandType K)
-      : OpKind(K), SubReg_TargetFlags(0) {
+ inline __attribute__((always_inline)) explicit MachineOperand(MachineOperandType K)   
+ : OpKind(K), SubReg_TargetFlags(0) {
     // Assert that the layout is what we expect. It's easy to grow this object.
     static_assert(alignof(MachineOperand) <= alignof(int64_t),
                   "MachineOperand shouldn't be more than 8 byte aligned");
@@ -221,13 +220,12 @@ private:
 public:
   /// getType - Returns the MachineOperandType for this operand.
   ///
-  MachineOperandType getType() const { return (MachineOperandType)OpKind; }
-
-  unsigned getTargetFlags() const {
-    return isReg() ? 0 : SubReg_TargetFlags;
+ inline __attribute__((always_inline)) MachineOperandType getType() const { return (MachineOperandType)OpKind; }
+ inline __attribute__((always_inline)) unsigned getTargetFlags() const {    
+  return isReg() ? 0 : SubReg_TargetFlags;
   }
-  void setTargetFlags(unsigned F) {
-    assert(!isReg() && "Register operands can't have target flags");
+ inline __attribute__((always_inline)) void setTargetFlags(unsigned F) {    
+  assert(!isReg() && "Register operands can't have target flags");
     SubReg_TargetFlags = F;
     assert(SubReg_TargetFlags == F && "Target flags out of range");
   }
@@ -240,8 +238,7 @@ public:
 
   /// getParent - Return the instruction that this operand belongs to.
   ///
-  MachineInstr *getParent() { return ParentMI; }
-  const MachineInstr *getParent() const { return ParentMI; }
+ inline __attribute__((always_inline)) MachineInstr *getParent() { return ParentMI; }  const MachineInstr *getParent() const { return ParentMI; }
 
   /// clearParent - Reset the parent pointer.
   ///
@@ -326,16 +323,11 @@ public:
   //===--------------------------------------------------------------------===//
 
   /// isReg - Tests if this is a MO_Register operand.
-  bool isReg() const { return OpKind == MO_Register; }
-  /// isImm - Tests if this is a MO_Immediate operand.
-  bool isImm() const { return OpKind == MO_Immediate; }
-  /// isCImm - Test if this is a MO_CImmediate operand.
-  bool isCImm() const { return OpKind == MO_CImmediate; }
-  /// isFPImm - Tests if this is a MO_FPImmediate operand.
-  bool isFPImm() const { return OpKind == MO_FPImmediate; }
-  /// isMBB - Tests if this is a MO_MachineBasicBlock operand.
-  bool isMBB() const { return OpKind == MO_MachineBasicBlock; }
-  /// isFI - Tests if this is a MO_FrameIndex operand.
+ inline __attribute__((always_inline)) bool isReg() const { return OpKind == MO_Register; }  /// isImm - Tests if this is a MO_Immediate operand.
+ inline __attribute__((always_inline)) bool isImm() const { return OpKind == MO_Immediate; }  /// isCImm - Test if this is a MO_CImmediate operand.
+ inline __attribute__((always_inline)) bool isCImm() const { return OpKind == MO_CImmediate; }  /// isFPImm - Tests if this is a MO_FPImmediate operand.
+ inline __attribute__((always_inline)) bool isFPImm() const { return OpKind == MO_FPImmediate; }  /// isMBB - Tests if this is a MO_MachineBasicBlock operand.
+ inline __attribute__((always_inline)) bool isMBB() const { return OpKind == MO_MachineBasicBlock; }  /// isFI - Tests if this is a MO_FrameIndex operand.
   bool isFI() const { return OpKind == MO_FrameIndex; }
   /// isCPI - Tests if this is a MO_ConstantPoolIndex operand.
   bool isCPI() const { return OpKind == MO_ConstantPoolIndex; }
@@ -358,16 +350,15 @@ public:
   bool isMCSymbol() const { return OpKind == MO_MCSymbol; }
   bool isDbgInstrRef() const { return OpKind == MO_DbgInstrRef; }
   bool isCFIIndex() const { return OpKind == MO_CFIIndex; }
-  bool isIntrinsicID() const { return OpKind == MO_IntrinsicID; }
-  bool isPredicate() const { return OpKind == MO_Predicate; }
+  inline __attribute__((always_inline)) bool isIntrinsicID() const { return OpKind == MO_IntrinsicID; } 
+  inline __attribute__((always_inline)) bool isPredicate() const { return OpKind == MO_Predicate; }  
   bool isShuffleMask() const { return OpKind == MO_ShuffleMask; }
   //===--------------------------------------------------------------------===//
   // Accessors for Register Operands
   //===--------------------------------------------------------------------===//
 
   /// getReg - Returns the register number.
-  Register getReg() const {
-    assert(isReg() && "This is not a register operand!");
+ inline __attribute__((always_inline)) Register getReg() const {    assert(isReg() && "This is not a register operand!");
     return Register(SmallContents.RegNo);
   }
 
@@ -381,8 +372,7 @@ public:
     return !IsDef;
   }
 
-  bool isDef() const {
-    assert(isReg() && "Wrong MachineOperand accessor");
+ inline __attribute__((always_inline)) bool isDef() const {    assert(isReg() && "Wrong MachineOperand accessor");
     return IsDef;
   }
 
@@ -452,8 +442,7 @@ public:
     return TiedTo;
   }
 
-  bool isDebug() const {
-    assert(isReg() && "Wrong MachineOperand accessor");
+ inline __attribute__((always_inline)) bool isDebug() const {    assert(isReg() && "Wrong MachineOperand accessor");
     return IsDebug;
   }
 
@@ -487,8 +476,7 @@ public:
   ///
   void setReg(Register Reg);
 
-  void setSubReg(unsigned subReg) {
-    assert(isReg() && "Wrong MachineOperand mutator");
+ inline __attribute__((always_inline)) void setSubReg(unsigned subReg) {    assert(isReg() && "Wrong MachineOperand mutator");
     SubReg_TargetFlags = subReg;
     assert(SubReg_TargetFlags == subReg && "SubReg out of range");
   }
@@ -522,8 +510,7 @@ public:
     IsDeadOrKill = Val;
   }
 
-  void setIsDead(bool Val = true) {
-    assert(isReg() && IsDef && "Wrong MachineOperand mutator");
+ inline __attribute__((always_inline)) void setIsDead(bool Val = true) {    assert(isReg() && IsDef && "Wrong MachineOperand mutator");
     IsDeadOrKill = Val;
   }
 
@@ -553,39 +540,32 @@ public:
   // Accessors for various operand types.
   //===--------------------------------------------------------------------===//
 
-  int64_t getImm() const {
-    assert(isImm() && "Wrong MachineOperand accessor");
+ inline __attribute__((always_inline)) int64_t getImm() const {    assert(isImm() && "Wrong MachineOperand accessor");
     return Contents.ImmVal;
   }
 
-  const ConstantInt *getCImm() const {
-    assert(isCImm() && "Wrong MachineOperand accessor");
+ inline __attribute__((always_inline)) const ConstantInt *getCImm() const {    assert(isCImm() && "Wrong MachineOperand accessor");
     return Contents.CI;
   }
 
-  const ConstantFP *getFPImm() const {
-    assert(isFPImm() && "Wrong MachineOperand accessor");
+ inline __attribute__((always_inline)) const ConstantFP *getFPImm() const {    assert(isFPImm() && "Wrong MachineOperand accessor");
     return Contents.CFP;
   }
 
-  MachineBasicBlock *getMBB() const {
-    assert(isMBB() && "Wrong MachineOperand accessor");
+ inline __attribute__((always_inline)) MachineBasicBlock *getMBB() const {    assert(isMBB() && "Wrong MachineOperand accessor");
     return Contents.MBB;
   }
 
-  int getIndex() const {
-    assert((isFI() || isCPI() || isTargetIndex() || isJTI()) &&
+ inline __attribute__((always_inline)) int getIndex() const {    assert((isFI() || isCPI() || isTargetIndex() || isJTI()) &&
            "Wrong MachineOperand accessor");
     return Contents.OffsetedInfo.Val.Index;
   }
 
-  const GlobalValue *getGlobal() const {
-    assert(isGlobal() && "Wrong MachineOperand accessor");
+ inline __attribute__((always_inline)) const GlobalValue *getGlobal() const {    assert(isGlobal() && "Wrong MachineOperand accessor");
     return Contents.OffsetedInfo.Val.GV;
   }
 
-  const BlockAddress *getBlockAddress() const {
-    assert(isBlockAddress() && "Wrong MachineOperand accessor");
+ inline __attribute__((always_inline)) const BlockAddress *getBlockAddress() const {    assert(isBlockAddress() && "Wrong MachineOperand accessor");
     return Contents.OffsetedInfo.Val.BA;
   }
 
@@ -609,13 +589,11 @@ public:
     return Contents.CFIIndex;
   }
 
-  Intrinsic::ID getIntrinsicID() const {
-    assert(isIntrinsicID() && "Wrong MachineOperand accessor");
+ inline __attribute__((always_inline)) Intrinsic::ID getIntrinsicID() const {    assert(isIntrinsicID() && "Wrong MachineOperand accessor");
     return Contents.IntrinsicID;
   }
 
-  unsigned getPredicate() const {
-    assert(isPredicate() && "Wrong MachineOperand accessor");
+ inline __attribute__((always_inline)) unsigned getPredicate() const {    assert(isPredicate() && "Wrong MachineOperand accessor");
     return Contents.Pred;
   }
 
@@ -626,8 +604,7 @@ public:
 
   /// Return the offset from the symbol in this operand. This always returns 0
   /// for ExternalSymbol operands.
-  int64_t getOffset() const {
-    assert((isGlobal() || isSymbol() || isMCSymbol() || isCPI() ||
+ inline __attribute__((always_inline)) int64_t getOffset() const {    assert((isGlobal() || isSymbol() || isMCSymbol() || isCPI() ||
             isTargetIndex() || isBlockAddress()) &&
            "Wrong MachineOperand accessor");
     return int64_t(uint64_t(Contents.OffsetedInfo.OffsetHi) << 32) |
@@ -681,8 +658,7 @@ public:
   // Mutators for various operand types.
   //===--------------------------------------------------------------------===//
 
-  void setImm(int64_t immVal) {
-    assert(isImm() && "Wrong MachineOperand mutator");
+ inline __attribute__((always_inline)) void setImm(int64_t immVal) {    assert(isImm() && "Wrong MachineOperand mutator");
     Contents.ImmVal = immVal;
   }
 
@@ -696,16 +672,14 @@ public:
     Contents.CFP = CFP;
   }
 
-  void setOffset(int64_t Offset) {
-    assert((isGlobal() || isSymbol() || isMCSymbol() || isCPI() ||
+ inline __attribute__((always_inline)) void setOffset(int64_t Offset) {    assert((isGlobal() || isSymbol() || isMCSymbol() || isCPI() ||
             isTargetIndex() || isBlockAddress()) &&
            "Wrong MachineOperand mutator");
     SmallContents.OffsetLo = unsigned(Offset);
     Contents.OffsetedInfo.OffsetHi = int(Offset >> 32);
   }
 
-  void setIndex(int Idx) {
-    assert((isFI() || isCPI() || isTargetIndex() || isJTI()) &&
+ inline __attribute__((always_inline)) void setIndex(int Idx) {    assert((isFI() || isCPI() || isTargetIndex() || isJTI()) &&
            "Wrong MachineOperand mutator");
     Contents.OffsetedInfo.Val.Index = Idx;
   }
@@ -724,8 +698,7 @@ public:
     Contents.InstrRef.OpIdx = OpIdx;
   }
 
-  void setMBB(MachineBasicBlock *MBB) {
-    assert(isMBB() && "Wrong MachineOperand mutator");
+ inline __attribute__((always_inline)) void setMBB(MachineBasicBlock *MBB) {    assert(isMBB() && "Wrong MachineOperand mutator");
     Contents.MBB = MBB;
   }
 
@@ -816,32 +789,32 @@ public:
   // Construction methods.
   //===--------------------------------------------------------------------===//
 
-  static MachineOperand CreateImm(int64_t Val) {
-    MachineOperand Op(MachineOperand::MO_Immediate);
+ inline __attribute__((always_inline)) static MachineOperand CreateImm(int64_t Val) {    
+  MachineOperand Op(MachineOperand::MO_Immediate);
     Op.setImm(Val);
     return Op;
   }
 
-  static MachineOperand CreateCImm(const ConstantInt *CI) {
-    MachineOperand Op(MachineOperand::MO_CImmediate);
+ inline __attribute__((always_inline)) static MachineOperand CreateCImm(const ConstantInt *CI) {    
+  MachineOperand Op(MachineOperand::MO_CImmediate);
     Op.Contents.CI = CI;
     return Op;
   }
 
-  static MachineOperand CreateFPImm(const ConstantFP *CFP) {
-    MachineOperand Op(MachineOperand::MO_FPImmediate);
+ inline __attribute__((always_inline)) static MachineOperand CreateFPImm(const ConstantFP *CFP) {    
+  MachineOperand Op(MachineOperand::MO_FPImmediate);
     Op.Contents.CFP = CFP;
     return Op;
   }
 
-  static MachineOperand CreateReg(Register Reg, bool isDef, bool isImp = false,
+  inline __attribute__((always_inline)) static MachineOperand CreateReg(Register Reg, bool isDef, bool isImp = false,
                                   bool isKill = false, bool isDead = false,
                                   bool isUndef = false,
                                   bool isEarlyClobber = false,
                                   unsigned SubReg = 0, bool isDebug = false,
                                   bool isInternalRead = false,
-                                  bool isRenamable = false) {
-    assert(!(isDead && !isDef) && "Dead flag on non-def");
+         bool isRenamable = false) {    
+          assert(!(isDead && !isDef) && "Dead flag on non-def");
     assert(!(isKill && isDef) && "Kill flag on def");
     MachineOperand Op(MachineOperand::MO_Register);
     Op.IsDef = isDef;
@@ -859,9 +832,9 @@ public:
     Op.setSubReg(SubReg);
     return Op;
   }
-  static MachineOperand CreateMBB(MachineBasicBlock *MBB,
-                                  unsigned TargetFlags = 0) {
-    MachineOperand Op(MachineOperand::MO_MachineBasicBlock);
+  inline __attribute__((always_inline)) static MachineOperand CreateMBB(MachineBasicBlock *MBB,
+         unsigned TargetFlags = 0) {    
+          MachineOperand Op(MachineOperand::MO_MachineBasicBlock);
     Op.setMBB(MBB);
     Op.setTargetFlags(TargetFlags);
     return Op;
@@ -871,9 +844,9 @@ public:
     Op.setIndex(Idx);
     return Op;
   }
-  static MachineOperand CreateCPI(unsigned Idx, int Offset,
-                                  unsigned TargetFlags = 0) {
-    MachineOperand Op(MachineOperand::MO_ConstantPoolIndex);
+  inline __attribute__((always_inline)) static MachineOperand CreateCPI(unsigned Idx, int Offset,
+         unsigned TargetFlags = 0) {    
+          MachineOperand Op(MachineOperand::MO_ConstantPoolIndex);
     Op.setIndex(Idx);
     Op.setOffset(Offset);
     Op.setTargetFlags(TargetFlags);
@@ -887,15 +860,15 @@ public:
     Op.setTargetFlags(TargetFlags);
     return Op;
   }
-  static MachineOperand CreateJTI(unsigned Idx, unsigned TargetFlags = 0) {
-    MachineOperand Op(MachineOperand::MO_JumpTableIndex);
+ inline __attribute__((always_inline)) static MachineOperand CreateJTI(unsigned Idx, unsigned TargetFlags = 0) {    
+  MachineOperand Op(MachineOperand::MO_JumpTableIndex);
     Op.setIndex(Idx);
     Op.setTargetFlags(TargetFlags);
     return Op;
   }
-  static MachineOperand CreateGA(const GlobalValue *GV, int64_t Offset,
-                                 unsigned TargetFlags = 0) {
-    MachineOperand Op(MachineOperand::MO_GlobalAddress);
+  inline __attribute__((always_inline)) static MachineOperand CreateGA(const GlobalValue *GV, int64_t Offset,
+         unsigned TargetFlags = 0) {    
+          MachineOperand Op(MachineOperand::MO_GlobalAddress);
     Op.Contents.OffsetedInfo.Val.GV = GV;
     Op.setOffset(Offset);
     Op.setTargetFlags(TargetFlags);
@@ -909,9 +882,9 @@ public:
     Op.setTargetFlags(TargetFlags);
     return Op;
   }
-  static MachineOperand CreateBA(const BlockAddress *BA, int64_t Offset,
-                                 unsigned TargetFlags = 0) {
-    MachineOperand Op(MachineOperand::MO_BlockAddress);
+  inline __attribute__((always_inline)) static MachineOperand CreateBA(const BlockAddress *BA, int64_t Offset,
+          unsigned TargetFlags = 0) {    
+          MachineOperand Op(MachineOperand::MO_BlockAddress);
     Op.Contents.OffsetedInfo.Val.BA = BA;
     Op.setOffset(Offset);
     Op.setTargetFlags(TargetFlags);
@@ -969,8 +942,8 @@ public:
     return Op;
   }
 
-  static MachineOperand CreateIntrinsicID(Intrinsic::ID ID) {
-    MachineOperand Op(MachineOperand::MO_IntrinsicID);
+ inline __attribute__((always_inline)) static MachineOperand CreateIntrinsicID(Intrinsic::ID ID) {    
+  MachineOperand Op(MachineOperand::MO_IntrinsicID);
     Op.Contents.IntrinsicID = ID;
     return Op;
   }

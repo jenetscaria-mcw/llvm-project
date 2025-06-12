@@ -201,8 +201,7 @@ private:
       return Result;
     }
 
-    ArrayRef<MachineMemOperand *> getMMOs() const {
-      return ArrayRef(getTrailingObjects<MachineMemOperand *>(), NumMMOs);
+ inline __attribute__((always_inline)) ArrayRef<MachineMemOperand *> getMMOs() const {      return ArrayRef(getTrailingObjects<MachineMemOperand *>(), NumMMOs);
     }
 
     MCSymbol *getPreInstrSymbol() const {
@@ -219,8 +218,7 @@ private:
       return HasHeapAllocMarker ? getTrailingObjects<MDNode *>()[0] : nullptr;
     }
 
-    MDNode *getPCSections() const {
-      return HasPCSections
+ inline __attribute__((always_inline)) MDNode *getPCSections() const {      return HasPCSections
                  ? getTrailingObjects<MDNode *>()[HasHeapAllocMarker]
                  : nullptr;
     }
@@ -229,8 +227,7 @@ private:
       return HasCFIType ? getTrailingObjects<uint32_t>()[0] : 0;
     }
 
-    MDNode *getMMRAMetadata() const {
-      return HasMMRAs ? getTrailingObjects<MDNode *>()[HasHeapAllocMarker +
+ inline __attribute__((always_inline)) MDNode *getMMRAMetadata() const {      return HasMMRAs ? getTrailingObjects<MDNode *>()[HasHeapAllocMarker +
                                                        HasPCSections]
                       : nullptr;
     }
@@ -252,11 +249,11 @@ private:
     const bool HasMMRAs;
 
     // Implement the `TrailingObjects` internal API.
-    size_t numTrailingObjects(OverloadToken<MachineMemOperand *>) const {
-      return NumMMOs;
+ inline __attribute__((always_inline)) size_t numTrailingObjects(OverloadToken<MachineMemOperand *>) const {      
+  return NumMMOs;
     }
-    size_t numTrailingObjects(OverloadToken<MCSymbol *>) const {
-      return HasPreInstrSymbol + HasPostInstrSymbol;
+ inline __attribute__((always_inline)) size_t numTrailingObjects(OverloadToken<MCSymbol *>) const {      
+  return HasPreInstrSymbol + HasPostInstrSymbol;
     }
     size_t numTrailingObjects(OverloadToken<MDNode *>) const {
       return HasHeapAllocMarker + HasPCSections;
@@ -343,9 +340,8 @@ public:
   // Use MachineFunction::DeleteMachineInstr() instead.
   ~MachineInstr() = delete;
 
-  const MachineBasicBlock* getParent() const { return Parent; }
-  MachineBasicBlock* getParent() { return Parent; }
-
+ inline __attribute__((always_inline)) const MachineBasicBlock* getParent() const { return Parent; } 
+ inline __attribute__((always_inline)) MachineBasicBlock* getParent() { return Parent; }
   /// Move the instruction before \p MovePos.
   void moveBefore(MachineInstr *MovePos);
 
@@ -355,8 +351,8 @@ public:
   /// Note: this is undefined behaviour if the instruction does not have a
   /// parent.
   const MachineFunction *getMF() const;
-  MachineFunction *getMF() {
-    return const_cast<MachineFunction *>(
+ inline __attribute__((always_inline)) MachineFunction *getMF() {    
+  return const_cast<MachineFunction *>(
         static_cast<const MachineInstr *>(this)->getMF());
   }
 
@@ -388,13 +384,13 @@ public:
   }
 
   /// Return the MI flags bitvector.
-  uint32_t getFlags() const {
-    return Flags;
+ inline __attribute__((always_inline)) uint32_t getFlags() const {    
+  return Flags;
   }
 
   /// Return whether an MI flag is set.
-  bool getFlag(MIFlag Flag) const {
-    assert(isUInt<LLVM_MI_FLAGS_BITS>(unsigned(Flag)) &&
+ inline __attribute__((always_inline)) bool getFlag(MIFlag Flag) const {    
+  assert(isUInt<LLVM_MI_FLAGS_BITS>(unsigned(Flag)) &&
            "Flag is out of range for the Flags field");
     return Flags & Flag;
   }
@@ -406,8 +402,8 @@ public:
     Flags |= (uint32_t)Flag;
   }
 
-  void setFlags(unsigned flags) {
-    assert(isUInt<LLVM_MI_FLAGS_BITS>(flags) &&
+ inline __attribute__((always_inline)) void setFlags(unsigned flags) {    
+  assert(isUInt<LLVM_MI_FLAGS_BITS>(flags) &&
            "flags to be set are out of range for the Flags field");
     // Filter out the automatically maintained flags.
     unsigned Mask = BundledPred | BundledSucc;
@@ -468,18 +464,18 @@ public:
 
   /// Return true if this instruction part of a bundle. This is true
   /// if either itself or its following instruction is marked "InsideBundle".
-  bool isBundled() const {
-    return isBundledWithPred() || isBundledWithSucc();
+ inline __attribute__((always_inline)) bool isBundled() const {    
+  return isBundledWithPred() || isBundledWithSucc();
   }
 
   /// Return true if this instruction is part of a bundle, and it is not the
   /// first instruction in the bundle.
-  bool isBundledWithPred() const { return getFlag(BundledPred); }
-
+ inline __attribute__((always_inline)) bool isBundledWithPred() const { 
+  return getFlag(BundledPred); }
   /// Return true if this instruction is part of a bundle, and it is not the
   /// last instruction in the bundle.
-  bool isBundledWithSucc() const { return getFlag(BundledSucc); }
-
+ inline __attribute__((always_inline)) bool isBundledWithSucc() const { 
+  return getFlag(BundledSucc); }
   /// Bundle this instruction with its predecessor. This can be an unbundled
   /// instruction, or it can be the first instruction in a bundle.
   void bundleWithPred();
@@ -495,8 +491,7 @@ public:
   void unbundleFromSucc();
 
   /// Returns the debug location id of this MachineInstr.
-  const DebugLoc &getDebugLoc() const { return DbgLoc; }
-
+ inline __attribute__((always_inline)) const DebugLoc &getDebugLoc() const { return DbgLoc; }
   /// Return the operand containing the offset to be used if this DBG_VALUE
   /// instruction is indirect; will be an invalid register if this value is
   /// not indirect, and an immediate with value 0 otherwise.
@@ -563,25 +558,22 @@ public:
   void emitError(StringRef Msg) const;
 
   /// Returns the target instruction descriptor of this MachineInstr.
-  const MCInstrDesc &getDesc() const { return *MCID; }
-
+ inline __attribute__((always_inline)) const MCInstrDesc &getDesc() const { return *MCID; }
   /// Returns the opcode of this MachineInstr.
-  unsigned getOpcode() const { return Opcode; }
-
+ inline __attribute__((always_inline)) unsigned getOpcode() const { return Opcode; }
   /// Retuns the total number of operands.
-  unsigned getNumOperands() const { return NumOperands; }
-
+ inline __attribute__((always_inline)) unsigned getNumOperands() const { return NumOperands; }
   /// Returns the total number of operands which are debug locations.
   unsigned getNumDebugOperands() const {
     return std::distance(debug_operands().begin(), debug_operands().end());
   }
 
-  const MachineOperand& getOperand(unsigned i) const {
-    assert(i < getNumOperands() && "getOperand() out of range!");
+ inline __attribute__((always_inline)) const MachineOperand& getOperand(unsigned i) const {    
+  assert(i < getNumOperands() && "getOperand() out of range!");
     return Operands[i];
   }
-  MachineOperand& getOperand(unsigned i) {
-    assert(i < getNumOperands() && "getOperand() out of range!");
+ inline __attribute__((always_inline)) MachineOperand& getOperand(unsigned i) {    
+  assert(i < getNumOperands() && "getOperand() out of range!");
     return Operands[i];
   }
 
@@ -779,8 +771,8 @@ public:
   /// Access to memory operands of the instruction. If there are none, that does
   /// not imply anything about whether the function accesses memory. Instead,
   /// the caller must behave conservatively.
-  ArrayRef<MachineMemOperand *> memoperands() const {
-    if (!Info)
+ inline __attribute__((always_inline)) ArrayRef<MachineMemOperand *> memoperands() const {    
+  if (!Info)
       return {};
 
     if (Info.is<EIIK_MMO>())
@@ -797,8 +789,7 @@ public:
   /// If `memoperands_begin() == memoperands_end()`, that does not imply
   /// anything about whether the function accesses memory. Instead, the caller
   /// must behave conservatively.
-  mmo_iterator memoperands_begin() const { return memoperands().begin(); }
-
+ inline __attribute__((always_inline)) mmo_iterator memoperands_begin() const { return memoperands().begin(); }
   /// Access to memory operands of the instruction.
   ///
   /// If `memoperands_begin() == memoperands_end()`, that does not imply
@@ -812,11 +803,9 @@ public:
   bool memoperands_empty() const { return memoperands().empty(); }
 
   /// Return true if this instruction has exactly one MachineMemOperand.
-  bool hasOneMemOperand() const { return memoperands().size() == 1; }
-
+ inline __attribute__((always_inline)) bool hasOneMemOperand() const { return memoperands().size() == 1; }
   /// Return the number of memory operands.
-  unsigned getNumMemOperands() const { return memoperands().size(); }
-
+ inline __attribute__((always_inline)) unsigned getNumMemOperands() const { return memoperands().size(); }
   /// Helper to extract a pre-instruction symbol if one has been added.
   MCSymbol *getPreInstrSymbol() const {
     if (!Info)
@@ -852,8 +841,8 @@ public:
   }
 
   /// Helper to extract PCSections metadata target sections.
-  MDNode *getPCSections() const {
-    if (!Info)
+ inline __attribute__((always_inline)) MDNode *getPCSections() const {    
+  if (!Info)
       return nullptr;
     if (ExtraInfo *EI = Info.get<EIIK_OutOfLine>())
       return EI->getPCSections();
@@ -862,8 +851,8 @@ public:
   }
 
   /// Helper to extract mmra.op metadata.
-  MDNode *getMMRAMetadata() const {
-    if (!Info)
+ inline __attribute__((always_inline)) MDNode *getMMRAMetadata() const {    
+  if (!Info)
       return nullptr;
     if (ExtraInfo *EI = Info.get<EIIK_OutOfLine>())
       return EI->getMMRAMetadata();
@@ -894,8 +883,8 @@ public:
   /// The first argument is the property being queried.
   /// The second argument indicates whether the query should look inside
   /// instruction bundles.
-  bool hasProperty(unsigned MCFlag, QueryType Type = AnyInBundle) const {
-    assert(MCFlag < 64 &&
+ inline __attribute__((always_inline)) bool hasProperty(unsigned MCFlag, QueryType Type = AnyInBundle) const {    
+  assert(MCFlag < 64 &&
            "MCFlag out of range for bit mask in getFlags/hasPropertyInBundle.");
     // Inline the fast path for unbundled or bundle-internal instructions.
     if (Type == IgnoreBundle || !isBundled() || isBundledWithPred())
@@ -907,8 +896,8 @@ public:
 
   /// Return true if this is an instruction that should go through the usual
   /// legalization steps.
-  bool isPreISelOpcode(QueryType Type = IgnoreBundle) const {
-    return hasProperty(MCID::PreISelOpcode, Type);
+ inline __attribute__((always_inline)) bool isPreISelOpcode(QueryType Type = IgnoreBundle) const {    
+  return hasProperty(MCID::PreISelOpcode, Type);
   }
 
   /// Return true if this instruction can have a variable number of operands.
@@ -1166,8 +1155,8 @@ public:
   /// by the MCID::MayRaiseFPException property, *and* at the same time,
   /// the instruction is used in a context where we expect floating-point
   /// exceptions are not disabled, as indicated by the NoFPExcept MI flag.
-  bool mayRaiseFPException() const {
-    return hasProperty(MCID::MayRaiseFPException) &&
+ inline __attribute__((always_inline)) bool mayRaiseFPException() const {    
+  return hasProperty(MCID::MayRaiseFPException) &&
            !getFlag(MachineInstr::MIFlag::NoFPExcept);
   }
 
@@ -1423,8 +1412,8 @@ public:
     return getOpcode() == TargetOpcode::BUNDLE;
   }
 
-  bool isCopy() const {
-    return getOpcode() == TargetOpcode::COPY;
+ inline __attribute__((always_inline)) bool isCopy() const {    
+  return getOpcode() == TargetOpcode::COPY;
   }
 
   bool isFullCopy() const {

@@ -116,13 +116,13 @@ public:
   /// Clear the value to null with the min tag type.
   void clear() { set<HelperT::MinTag>(nullptr); }
 
-  TagT getTag() const {
-    return static_cast<TagT>(getOpaqueValue() & HelperT::TagMask);
+ inline __attribute__((always_inline)) TagT getTag() const {    return static_cast<TagT>(getOpaqueValue() & HelperT::TagMask);
   }
 
-  template <TagT N> bool is() const { return N == getTag(); }
+ template <TagT N> 
+inline __attribute__((always_inline)) bool is() const { return N == getTag(); }
 
-  template <TagT N> typename HelperT::template Lookup<N>::PointerT get() const {
+template <TagT N>  inline __attribute__((always_inline))typename HelperT::template Lookup<N>::PointerT get() const {
     void *P = is<N>() ? getVoidPtr() : nullptr;
     return HelperT::template Lookup<N>::TraitsT::getFromVoidPointer(P);
   }
@@ -137,17 +137,15 @@ public:
   /// If the tag is zero and the pointer's value isn't changed when being
   /// stored, get the address of the stored value type-punned to the zero-tag's
   /// pointer type.
-  typename HelperT::template Lookup<HelperT::MinTag>::PointerT const *
-  getAddrOfZeroTagPointer() const {
-    return const_cast<PointerSumType *>(this)->getAddrOfZeroTagPointer();
+   inline __attribute__((always_inline))typename HelperT::template Lookup<HelperT::MinTag>::PointerT const *
+   getAddrOfZeroTagPointer() const {    return const_cast<PointerSumType *>(this)->getAddrOfZeroTagPointer();
   }
 
   /// If the tag is zero and the pointer's value isn't changed when being
   /// stored, get the address of the stored value type-punned to the zero-tag's
   /// pointer type.
-  typename HelperT::template Lookup<HelperT::MinTag>::PointerT *
-  getAddrOfZeroTagPointer() {
-    static_assert(HelperT::MinTag == 0, "Non-zero minimum tag value!");
+  inline __attribute__((always_inline)) typename HelperT::template Lookup<HelperT::MinTag>::PointerT *
+  getAddrOfZeroTagPointer() {    static_assert(HelperT::MinTag == 0, "Non-zero minimum tag value!");
     assert(is<HelperT::MinTag>() && "The active tag is not zero!");
     // Store the initial value of the pointer when read out of our storage.
     auto InitialPtr = get<HelperT::MinTag>();
@@ -163,8 +161,7 @@ public:
     return &Storage.MinTagPointer;
   }
 
-  explicit operator bool() const {
-    return getOpaqueValue() & HelperT::PointerMask;
+ inline __attribute__((always_inline)) explicit operator bool() const {    return getOpaqueValue() & HelperT::PointerMask;
   }
   bool operator==(const PointerSumType &R) const {
     return getOpaqueValue() == R.getOpaqueValue();
@@ -185,15 +182,14 @@ public:
     return getOpaqueValue() >= R.getOpaqueValue();
   }
 
-  uintptr_t getOpaqueValue() const {
+inline __attribute__((always_inline))   uintptr_t getOpaqueValue() const {
     // Read the underlying storage of the union, regardless of the active
     // member.
     return bit_cast<uintptr_t>(Storage);
   }
 
 protected:
-  void *getVoidPtr() const {
-    return reinterpret_cast<void *>(getOpaqueValue() & HelperT::PointerMask);
+ inline __attribute__((always_inline)) void *getVoidPtr() const {    return reinterpret_cast<void *>(getOpaqueValue() & HelperT::PointerMask);
   }
 };
 

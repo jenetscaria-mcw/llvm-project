@@ -437,7 +437,7 @@ protected:
   }
 
   /// Get the register bank identified by \p ID.
-  const RegisterBank &getRegBank(unsigned ID) {
+  inline __attribute__((always_inline)) const RegisterBank &getRegBank(unsigned ID) {    
     assert(ID < getNumRegBanks() && "Accessing an unknown register bank");
     return *RegBanks[ID];
   }
@@ -582,7 +582,7 @@ public:
   virtual ~RegisterBankInfo() = default;
 
   /// Get the register bank identified by \p ID.
-  const RegisterBank &getRegBank(unsigned ID) const {
+  inline __attribute__((always_inline)) const RegisterBank &getRegBank(unsigned ID) const {    
     return const_cast<RegisterBankInfo *>(this)->getRegBank(ID);
   }
 

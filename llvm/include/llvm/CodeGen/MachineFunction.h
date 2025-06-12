@@ -680,8 +680,7 @@ public:
   const DataLayout &getDataLayout() const;
 
   /// Return the LLVM function that this machine code represents
-  Function &getFunction() { return F; }
-
+ inline __attribute__((always_inline)) Function &getFunction() { return F; }
   /// Return the LLVM function that this machine code represents
   const Function &getFunction() const { return F; }
 
@@ -714,8 +713,7 @@ public:
 
   /// getSubtarget - Return the subtarget for which this machine code is being
   /// compiled.
-  const TargetSubtargetInfo &getSubtarget() const { return *STI; }
-
+ inline __attribute__((always_inline)) const TargetSubtargetInfo &getSubtarget() const { return *STI; }
   /// getSubtarget - This method returns a pointer to the specified type of
   /// TargetSubtargetInfo.  In debug builds, it verifies that the object being
   /// returned is of the correct type.
@@ -724,9 +722,8 @@ public:
   }
 
   /// getRegInfo - Return information about the registers currently in use.
-  MachineRegisterInfo &getRegInfo() { return *RegInfo; }
-  const MachineRegisterInfo &getRegInfo() const { return *RegInfo; }
-
+ inline __attribute__((always_inline)) MachineRegisterInfo &getRegInfo() { return *RegInfo; } 
+ inline __attribute__((always_inline)) const MachineRegisterInfo &getRegInfo() const { return *RegInfo; }
   /// getFrameInfo - Return the frame info object for the current function.
   /// This object contains information about objects allocated on the stack
   /// frame of the current function in an abstract way.
@@ -738,8 +735,7 @@ public:
   /// current function.  If the current function has no jump tables, this will
   /// return null.
   const MachineJumpTableInfo *getJumpTableInfo() const { return JumpTableInfo; }
-  MachineJumpTableInfo *getJumpTableInfo() { return JumpTableInfo; }
-
+ inline __attribute__((always_inline)) MachineJumpTableInfo *getJumpTableInfo() { return JumpTableInfo; }
   /// getOrCreateJumpTableInfo - Get the JumpTableInfo for this function, if it
   /// does already exist, allocate one.
   MachineJumpTableInfo *getOrCreateJumpTableInfo(unsigned JTEntryKind);
@@ -1043,7 +1039,7 @@ public:
       Align BaseAlignment, const AAMDNodes &AAInfo = AAMDNodes(),
       const MDNode *Ranges = nullptr, SyncScope::ID SSID = SyncScope::System,
       AtomicOrdering Ordering = AtomicOrdering::NotAtomic,
-      AtomicOrdering FailureOrdering = AtomicOrdering::NotAtomic) {
+  AtomicOrdering FailureOrdering = AtomicOrdering::NotAtomic) {    
     return getMachineMemOperand(PtrInfo, F, LocationSize::precise(Size),
                                 BaseAlignment, AAInfo, Ranges, SSID, Ordering,
                                 FailureOrdering);

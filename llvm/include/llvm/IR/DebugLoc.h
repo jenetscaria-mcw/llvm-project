@@ -30,12 +30,11 @@ namespace llvm {
   ///
   /// To avoid extra includes, \a DebugLoc doubles the \a DILocation API with a
   /// one based on relatively opaque \a MDNode pointers.
-  class DebugLoc {
+  class DebugLoc {    
     TrackingMDNodeRef Loc;
 
   public:
-    DebugLoc() = default;
-
+  inline __attribute__((always_inline)) DebugLoc() = default;
     /// Construct from an \a DILocation.
     DebugLoc(const DILocation *L);
 

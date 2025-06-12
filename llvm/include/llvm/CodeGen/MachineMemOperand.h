@@ -229,22 +229,21 @@ public:
   /// For PseudoSourceValue::FPRel values, this is the FrameIndex number.
   int64_t getOffset() const { return PtrInfo.Offset; }
 
-  unsigned getAddrSpace() const { return PtrInfo.getAddrSpace(); }
-
+ inline __attribute__((always_inline)) unsigned getAddrSpace() const { return PtrInfo.getAddrSpace(); }
   /// Return the memory type of the memory reference. This should only be relied
   /// on for GlobalISel G_* operation legalization.
   LLT getMemoryType() const { return MemoryType; }
 
   /// Return the size in bytes of the memory reference.
-  LocationSize getSize() const {
-    return MemoryType.isValid()
+ inline __attribute__((always_inline)) LocationSize getSize() const {    
+  return MemoryType.isValid()
                ? LocationSize::precise(MemoryType.getSizeInBytes())
                : LocationSize::beforeOrAfterPointer();
   }
 
   /// Return the size in bits of the memory reference.
-  LocationSize getSizeInBits() const {
-    return MemoryType.isValid()
+ inline __attribute__((always_inline)) LocationSize getSizeInBits() const {    
+  return MemoryType.isValid()
                ? LocationSize::precise(MemoryType.getSizeInBits())
                : LocationSize::beforeOrAfterPointer();
   }
@@ -275,21 +274,21 @@ public:
   /// Return the atomic ordering requirements for this memory operation. For
   /// cmpxchg atomic operations, return the atomic ordering requirements when
   /// store occurs.
-  AtomicOrdering getSuccessOrdering() const {
-    return static_cast<AtomicOrdering>(AtomicInfo.Ordering);
+ inline __attribute__((always_inline)) AtomicOrdering getSuccessOrdering() const {    
+  return static_cast<AtomicOrdering>(AtomicInfo.Ordering);
   }
 
   /// For cmpxchg atomic operations, return the atomic ordering requirements
   /// when store does not occur.
-  AtomicOrdering getFailureOrdering() const {
-    return static_cast<AtomicOrdering>(AtomicInfo.FailureOrdering);
+ inline __attribute__((always_inline)) AtomicOrdering getFailureOrdering() const {    
+  return static_cast<AtomicOrdering>(AtomicInfo.FailureOrdering);
   }
 
   /// Return a single atomic ordering that is at least as strong as both the
   /// success and failure orderings for an atomic operation.  (For operations
   /// other than cmpxchg, this is equivalent to getSuccessOrdering().)
-  AtomicOrdering getMergedOrdering() const {
-    return getMergedAtomicOrdering(getSuccessOrdering(), getFailureOrdering());
+ inline __attribute__((always_inline)) AtomicOrdering getMergedOrdering() const {    
+  return getMergedAtomicOrdering(getSuccessOrdering(), getFailureOrdering());
   }
 
   bool isLoad() const { return FlagVals & MOLoad; }

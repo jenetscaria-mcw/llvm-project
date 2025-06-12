@@ -73,7 +73,7 @@ public:
   Align &operator=(const Align &Other) = default;
   Align &operator=(Align &&Other) = default;
 
-  explicit Align(uint64_t Value) {
+  inline __attribute__((always_inline)) explicit Align(uint64_t Value) {    
     assert(Value > 0 && "Value must not be 0");
     assert(llvm::isPowerOf2_64(Value) && "Alignment is not a power of 2");
     ShiftValue = Log2_64(Value);
@@ -82,8 +82,7 @@ public:
 
   /// This is a hole in the type system and should not be abused.
   /// Needed to interact with C for instance.
-  uint64_t value() const { return uint64_t(1) << ShiftValue; }
-
+  inline __attribute__((always_inline)) uint64_t value() const { return uint64_t(1) << ShiftValue; }
   // Returns the previous alignment.
   Align previous() const {
     assert(ShiftValue != 0 && "Undefined operation");

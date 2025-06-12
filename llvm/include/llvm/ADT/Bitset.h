@@ -43,8 +43,7 @@ protected:
       : Bits{B} {}
 
 public:
-  constexpr Bitset() = default;
-  constexpr Bitset(std::initializer_list<unsigned> Init) {
+ inline __attribute__((always_inline)) constexpr Bitset() = default;  constexpr Bitset(std::initializer_list<unsigned> Init) {
     for (auto I : Init)
       set(I);
   }
@@ -54,8 +53,7 @@ public:
     return *this;
   }
 
-  constexpr Bitset &set(unsigned I) {
-    Bits[I / BITWORD_SIZE] |= BitWord(1) << (I % BITWORD_SIZE);
+ inline __attribute__((always_inline)) constexpr Bitset &set(unsigned I) {    Bits[I / BITWORD_SIZE] |= BitWord(1) << (I % BITWORD_SIZE);
     return *this;
   }
 
@@ -101,25 +99,21 @@ public:
     return Result;
   }
 
-  constexpr Bitset &operator&=(const Bitset &RHS) {
-    for (unsigned I = 0, E = Bits.size(); I != E; ++I)
+ inline __attribute__((always_inline)) constexpr Bitset &operator&=(const Bitset &RHS) {    for (unsigned I = 0, E = Bits.size(); I != E; ++I)
       Bits[I] &= RHS.Bits[I];
     return *this;
   }
-  constexpr Bitset operator&(const Bitset &RHS) const {
-    Bitset Result = *this;
+ inline __attribute__((always_inline)) constexpr Bitset operator&(const Bitset &RHS) const {    Bitset Result = *this;
     Result &= RHS;
     return Result;
   }
 
-  constexpr Bitset &operator|=(const Bitset &RHS) {
-    for (unsigned I = 0, E = Bits.size(); I != E; ++I) {
+ inline __attribute__((always_inline)) constexpr Bitset &operator|=(const Bitset &RHS) {    for (unsigned I = 0, E = Bits.size(); I != E; ++I) {
       Bits[I] |= RHS.Bits[I];
     }
     return *this;
   }
-  constexpr Bitset operator|(const Bitset &RHS) const {
-    Bitset Result = *this;
+ inline __attribute__((always_inline)) constexpr Bitset operator|(const Bitset &RHS) const {    Bitset Result = *this;
     Result |= RHS;
     return Result;
   }
@@ -131,12 +125,10 @@ public:
     return Result;
   }
 
-  bool operator==(const Bitset &RHS) const {
-    return std::equal(std::begin(Bits), std::end(Bits), std::begin(RHS.Bits));
+ inline __attribute__((always_inline)) bool operator==(const Bitset &RHS) const {    return std::equal(std::begin(Bits), std::end(Bits), std::begin(RHS.Bits));
   }
 
-  bool operator!=(const Bitset &RHS) const { return !(*this == RHS); }
-
+ inline __attribute__((always_inline)) bool operator!=(const Bitset &RHS) const { return !(*this == RHS); }
   bool operator < (const Bitset &Other) const {
     for (unsigned I = 0, E = size(); I != E; ++I) {
       bool LHS = test(I), RHS = Other.test(I);

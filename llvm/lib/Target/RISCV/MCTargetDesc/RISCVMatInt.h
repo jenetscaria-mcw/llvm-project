@@ -35,9 +35,7 @@ public:
     assert(I == Imm && "truncated");
   }
 
-  unsigned getOpcode() const { return Opc; }
-  int64_t getImm() const { return Imm; }
-
+ inline __attribute__((always_inline)) unsigned getOpcode() const { return Opc; } inline __attribute__((always_inline)) int64_t getImm() const { return Imm; }
   OpndKind getOpndKind() const;
 };
 using InstSeq = SmallVector<Inst, 8>;

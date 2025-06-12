@@ -22,9 +22,8 @@ namespace llvm {
 namespace MIPatternMatch {
 
 template <typename Reg, typename Pattern>
-[[nodiscard]] bool mi_match(Reg R, const MachineRegisterInfo &MRI,
-                            Pattern &&P) {
-  return P.match(MRI, R);
+[[nodiscard]] inline __attribute__((always_inline))  bool mi_match(Reg R, const MachineRegisterInfo &MRI,
+       Pattern &&P) {  return P.match(MRI, R);
 }
 
 template <typename Pattern>
@@ -50,10 +49,8 @@ inline OneUse_match<SubPat> m_OneUse(const SubPat &SP) {
 
 template <typename SubPatternT> struct OneNonDBGUse_match {
   SubPatternT SubPat;
-  OneNonDBGUse_match(const SubPatternT &SP) : SubPat(SP) {}
-
-  bool match(const MachineRegisterInfo &MRI, Register Reg) {
-    return MRI.hasOneNonDBGUse(Reg) && SubPat.match(MRI, Reg);
+ inline __attribute__((always_inline)) OneNonDBGUse_match(const SubPatternT &SP) : SubPat(SP) {}
+ inline __attribute__((always_inline)) bool match(const MachineRegisterInfo &MRI, Register Reg) {    return MRI.hasOneNonDBGUse(Reg) && SubPat.match(MRI, Reg);
   }
 };
 
@@ -80,8 +77,7 @@ inline std::optional<int64_t> matchConstant(Register Reg,
 
 template <typename ConstT> struct ConstantMatch {
   ConstT &CR;
-  ConstantMatch(ConstT &C) : CR(C) {}
-  bool match(const MachineRegisterInfo &MRI, Register Reg) {
+ inline __attribute__((always_inline)) ConstantMatch(ConstT &C) : CR(C) {}  bool match(const MachineRegisterInfo &MRI, Register Reg) {
     if (auto MaybeCst = matchConstant<ConstT>(Reg, MRI)) {
       CR = *MaybeCst;
       return true;
@@ -316,16 +312,14 @@ template <typename... Preds> Or<Preds...> m_any_of(Preds &&... preds) {
 }
 
 template <typename BindTy> struct bind_helper {
-  static bool bind(const MachineRegisterInfo &MRI, BindTy &VR, BindTy &V) {
-    VR = V;
+ inline __attribute__((always_inline)) static bool bind(const MachineRegisterInfo &MRI, BindTy &VR, BindTy &V) {    VR = V;
     return true;
   }
 };
 
 template <> struct bind_helper<MachineInstr *> {
-  static bool bind(const MachineRegisterInfo &MRI, MachineInstr *&MI,
-                   Register Reg) {
-    MI = MRI.getVRegDef(Reg);
+  inline __attribute__((always_inline))  static bool bind(const MachineRegisterInfo &MRI, MachineInstr *&MI,
+     Register Reg) {    MI = MRI.getVRegDef(Reg);
     if (MI)
       return true;
     return false;
@@ -359,9 +353,9 @@ template <> struct bind_helper<const ConstantFP *> {
 template <typename Class> struct bind_ty {
   Class &VR;
 
-  bind_ty(Class &V) : VR(V) {}
-
-  template <typename ITy> bool match(const MachineRegisterInfo &MRI, ITy &&V) {
+ inline __attribute__((always_inline)) bind_ty(Class &V) : VR(V) {}
+ template <typename ITy> 
+inline __attribute__((always_inline)) bool match(const MachineRegisterInfo &MRI, ITy &&V) {
     return bind_helper<Class>::bind(MRI, VR, V);
   }
 };
@@ -393,8 +387,8 @@ struct BinaryOp_match {
   LHS_P L;
   RHS_P R;
 
-  BinaryOp_match(const LHS_P &LHS, const RHS_P &RHS) : L(LHS), R(RHS) {}
-  template <typename OpTy>
+inline __attribute__((always_inline))   BinaryOp_match(const LHS_P &LHS, const RHS_P &RHS) : L(LHS), R(RHS) {}
+ template <typename OpTy>
   bool match(const MachineRegisterInfo &MRI, OpTy &&Op) {
     MachineInstr *TmpMI;
     if (mi_match(Op, MRI, m_MInstr(TmpMI))) {
@@ -553,8 +547,8 @@ m_GSMin(const LHS &L, const RHS &R) {
 template <typename SrcTy, unsigned Opcode> struct UnaryOp_match {
   SrcTy L;
 
-  UnaryOp_match(const SrcTy &LHS) : L(LHS) {}
-  template <typename OpTy>
+inline __attribute__((always_inline))   UnaryOp_match(const SrcTy &LHS) : L(LHS) {}
+ template <typename OpTy>
   bool match(const MachineRegisterInfo &MRI, OpTy &&Op) {
     MachineInstr *TmpMI;
     if (mi_match(Op, MRI, m_MInstr(TmpMI))) {
@@ -645,10 +639,9 @@ struct CompareOp_match {
   LHS_P L;
   RHS_P R;
 
-  CompareOp_match(const Pred_P &Pred, const LHS_P &LHS, const RHS_P &RHS)
-      : P(Pred), L(LHS), R(RHS) {}
-
-  template <typename OpTy>
+  inline __attribute__((always_inline)) CompareOp_match(const Pred_P &Pred, const LHS_P &LHS, const RHS_P &RHS)
+  : P(Pred), L(LHS), R(RHS) {}
+ template <typename OpTy>
   bool match(const MachineRegisterInfo &MRI, OpTy &&Op) {
     MachineInstr *TmpMI;
     if (!mi_match(Op, MRI, m_MInstr(TmpMI)) || TmpMI->getOpcode() != Opcode)

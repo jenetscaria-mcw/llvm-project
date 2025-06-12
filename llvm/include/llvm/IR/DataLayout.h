@@ -407,7 +407,7 @@ public:
   /// Layout pointer size, in bits
   /// FIXME: The defaults need to be removed once all of
   /// the backends/clients are updated.
-  unsigned getPointerSizeInBits(unsigned AS = 0) const {
+  inline __attribute__((always_inline)) unsigned getPointerSizeInBits(unsigned AS = 0) const {    
     return getPointerAlignElem(AS).TypeBitWidth;
   }
 

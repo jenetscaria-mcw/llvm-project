@@ -81,7 +81,7 @@ namespace llvm {
     StringRef(std::nullptr_t) = delete;
 
     /// Construct a string ref from a cstring.
-    /*implicit*/ constexpr StringRef(const char *Str)
+    /*implicit*/ inline __attribute__((always_inline)) constexpr StringRef(const char *Str)
         : Data(Str), Length(Str ?
     // GCC 7 doesn't have constexpr char_traits. Fall back to __builtin_strlen.
 #if defined(_GLIBCXX_RELEASE) && _GLIBCXX_RELEASE < 8
@@ -89,7 +89,7 @@ namespace llvm {
 #else
                                 std::char_traits<char>::length(Str)
 #endif
-                                : 0) {
+                : 0) {
     }
 
     /// Construct a string ref from a pointer and length.

@@ -87,13 +87,11 @@ public:
 
 class DebugEpochBase {
 public:
-  void incrementEpoch() {}
-
+ inline __attribute__((always_inline)) void incrementEpoch() {}
   class HandleBase {
   public:
     HandleBase() = default;
-    explicit HandleBase(const DebugEpochBase *) {}
-    bool isHandleInSync() const { return true; }
+ inline __attribute__((always_inline)) explicit HandleBase(const DebugEpochBase *) {}    bool isHandleInSync() const { return true; }
     const void *getEpochAddress() const { return nullptr; }
   };
 };
