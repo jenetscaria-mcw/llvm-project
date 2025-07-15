@@ -139,6 +139,7 @@
 #include "llvm/Transforms/Vectorize/LoopVectorize.h"
 #include "llvm/Transforms/Vectorize/SLPVectorizer.h"
 #include "llvm/Transforms/Vectorize/VectorCombine.h"
+#include <iostream>
 
 using namespace llvm;
 
@@ -184,9 +185,9 @@ static cl::opt<bool> EnablePostPGOLoopRotation(
     "enable-post-pgo-loop-rotation", cl::init(true), cl::Hidden,
     cl::desc("Run the loop rotation transformation after PGO instrumentation"));
 
-static cl::opt<bool> EnableGlobalAnalyses(
-    "enable-global-analyses", cl::init(true), cl::Hidden,
-    cl::desc("Enable inter-procedural analyses"));
+static cl::opt<bool>
+    EnableGlobalAnalyses("enable-global-analyses", cl::init(true), cl::Hidden,
+                         cl::desc("Enable inter-procedural analyses"));
 
 static cl::opt<bool>
     RunPartialInlining("enable-partial-inlining", cl::init(false), cl::Hidden,
@@ -783,6 +784,7 @@ void PassBuilder::addPreInlinerPasses(ModulePassManager &MPM,
   // performance testing.
   // FIXME: this comment is cargo culted from the old pass manager, revisit).
   IP.HintThreshold = Level.isOptimizingForSize() ? PreInlineThreshold : 325;
+  std::cout << "ModuleInlinerWrapperPass MPM add pass" << std::endl;
   ModuleInlinerWrapperPass MIWP(
       IP, /* MandatoryFirst */ true,
       InlineContext{LTOPhase, InlinePass::EarlyInliner});
@@ -894,6 +896,7 @@ static InlineParams getInlineParamsFromOptLevel(OptimizationLevel Level) {
 ModuleInlinerWrapperPass
 PassBuilder::buildInlinerPipeline(OptimizationLevel Level,
                                   ThinOrFullLTOPhase Phase) {
+  // std::cout << "ModuleInlinerWrapperPass buildInlinerPipeline" << std::endl;
   InlineParams IP;
   if (PTO.InlinerThreshold == -1)
     IP = getInlineParamsFromOptLevel(Level);
@@ -912,6 +915,7 @@ PassBuilder::buildInlinerPipeline(OptimizationLevel Level,
   if (PGOOpt)
     IP.EnableDeferral = EnablePGOInlineDeferral;
 
+  // std::cout << "ModuleInlinerWrapperPass MIWP add pass" << std::endl;
   ModuleInlinerWrapperPass MIWP(IP, PerformMandatoryInliningsFirst,
                                 InlineContext{Phase, InlinePass::CGSCCInliner},
                                 UseInlineAdvisor, MaxDevirtIterations);
@@ -1131,11 +1135,10 @@ PassBuilder::buildModuleSimplificationPipeline(OptimizationLevel Level,
   // and prior to optimizing globals.
   // FIXME: This position in the pipeline hasn't been carefully considered in
   // years, it should be re-analyzed.
-  MPM.addPass(IPSCCPPass(
-              IPSCCPOptions(/*AllowFuncSpec=*/
-                            Level != OptimizationLevel::Os &&
-                            Level != OptimizationLevel::Oz &&
-                            !isLTOPreLink(Phase))));
+  MPM.addPass(IPSCCPPass(IPSCCPOptions(/*AllowFuncSpec=*/
+                                       Level != OptimizationLevel::Os &&
+                                       Level != OptimizationLevel::Oz &&
+                                       !isLTOPreLink(Phase))));
 
   // Attach metadata to indirect call sites indicating the set of functions
   // they may target at run-time. This should follow IPSCCP.
@@ -1630,7 +1633,7 @@ PassBuilder::buildFatLTODefaultPipeline(OptimizationLevel Level, bool ThinLTO,
 ModulePassManager
 PassBuilder::buildThinLTOPreLinkDefaultPipeline(OptimizationLevel Level) {
   if (Level == OptimizationLevel::O0)
-    return buildO0DefaultPipeline(Level, /*LTOPreLink*/true);
+    return buildO0DefaultPipeline(Level, /*LTOPreLink*/ true);
 
   ModulePassManager MPM;
 
@@ -1884,6 +1887,7 @@ PassBuilder::buildLTODefaultPipeline(OptimizationLevel Level,
                                   UseInlineAdvisor,
                                   ThinOrFullLTOPhase::FullLTOPostLink));
   } else {
+    std::cout << "ModuleInlinerWrapperPass MPM add pass" << std::endl;
     MPM.addPass(ModuleInlinerWrapperPass(
         getInlineParamsFromOptLevel(Level),
         /* MandatoryFirst */ true,

@@ -34,6 +34,7 @@
 #include "llvm/Analysis/ReplayInlineAdvisor.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/Utils/ImportedFunctionsInliningStatistics.h"
+#include "llvm/Demangle/Demangle.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/DebugLoc.h"
@@ -61,6 +62,8 @@
 #include <algorithm>
 #include <cassert>
 #include <functional>
+#include <iostream>
+#include <unordered_map>
 #include <utility>
 
 using namespace llvm;
@@ -91,7 +94,6 @@ static cl::opt<bool> KeepAdvisorForPrinting("keep-inline-advisor-for-printing",
 static cl::opt<bool>
     EnablePostSCCAdvisorPrinting("enable-scc-inline-advisor-printing",
                                  cl::init(false), cl::Hidden);
-
 
 static cl::opt<std::string> CGSCCInlineReplayFile(
     "cgscc-inline-replay", cl::init(""), cl::value_desc("filename"),
@@ -208,8 +210,9 @@ void makeFunctionBodyUnreachable(Function &F) {
 PreservedAnalyses InlinerPass::run(LazyCallGraph::SCC &InitialC,
                                    CGSCCAnalysisManager &AM, LazyCallGraph &CG,
                                    CGSCCUpdateResult &UR) {
-  const auto &MAMProxy =
-      AM.getResult<ModuleAnalysisManagerCGSCCProxy>(InitialC, CG);
+  //std::cout << "Inliner Pass Run" << std::endl;
+    const auto &MAMProxy =
+        AM.getResult<ModuleAnalysisManagerCGSCCProxy>(InitialC, CG);
   bool Changed = false;
 
   assert(InitialC.size() > 0 && "Cannot handle an empty SCC!");
@@ -308,6 +311,7 @@ PreservedAnalyses InlinerPass::run(LazyCallGraph::SCC &InitialC,
   // Loop forward over all of the calls. Note that we cannot cache the size as
   // inlining can introduce new calls that need to be processed.
   for (int I = 0; I < (int)Calls.size(); ++I) {
+    //std::cout << "*********Calls total*********" << std::endl;
     // We expect the calls to typically be batched with sequences of calls that
     // have the same caller, so we first set up some shared infrastructure for
     // this caller. We also do any pruning we can at this layer on the caller
@@ -329,12 +333,14 @@ PreservedAnalyses InlinerPass::run(LazyCallGraph::SCC &InitialC,
     // We bail out as soon as the caller has to change so we can update the
     // call graph and prepare the context of that new caller.
     bool DidInline = false;
+    //std::cout << "=============" << std::endl;
     for (; I < (int)Calls.size() && Calls[I].first->getCaller() == &F; ++I) {
       auto &P = Calls[I];
       CallBase *CB = P.first;
       const int InlineHistoryID = P.second;
       Function &Callee = *CB->getCalledFunction();
-
+      //std::cout << llvm::demangle(F.getName().str()) << "\t"
+      //          << llvm::demangle(Callee.getName().str()) << "\n";
       if (InlineHistoryID != -1 &&
           inlineHistoryIncludes(&Callee, InlineHistoryID, InlineHistory)) {
         LLVM_DEBUG(dbgs() << "Skipping inlining due to history: " << F.getName()
@@ -360,13 +366,16 @@ PreservedAnalyses InlinerPass::run(LazyCallGraph::SCC &InitialC,
         continue;
       }
 
+      //std::cout << "Enters recommendation 1" << std::endl;
       std::unique_ptr<InlineAdvice> Advice =
           Advisor.getAdvice(*CB, OnlyMandatory);
 
+      //std::cout << "Enters recommendation 2" << std::endl;
       // Check whether we want to inline this callsite.
       if (!Advice)
         continue;
 
+      //std::cout << "Enters recommendation 3" << std::endl;
       if (!Advice->isInliningRecommended()) {
         Advice->recordUnattemptedInlining();
         continue;
@@ -392,6 +401,7 @@ PreservedAnalyses InlinerPass::run(LazyCallGraph::SCC &InitialC,
         continue;
       }
 
+      //std::cout << "Enters recommendation 4" << std::endl;
       DidInline = true;
       InlinedCallees.insert(&Callee);
       ++NumInlined;
@@ -403,7 +413,7 @@ PreservedAnalyses InlinerPass::run(LazyCallGraph::SCC &InitialC,
       if (!IFI.InlinedCallSites.empty()) {
         int NewHistoryID = InlineHistory.size();
         InlineHistory.push_back({&Callee, InlineHistoryID});
-
+        //std::cout << "Enters recommendation 5" << std::endl;
         for (CallBase *ICB : reverse(IFI.InlinedCallSites)) {
           Function *NewCallee = ICB->getCalledFunction();
           assert(!(NewCallee && NewCallee->isIntrinsic()) &&
@@ -447,6 +457,7 @@ PreservedAnalyses InlinerPass::run(LazyCallGraph::SCC &InitialC,
       // of other functions to one, changing inline cost thresholds. Non-local
       // discardable functions with comdats are checked later on.
       bool CalleeWasDeleted = false;
+      //std::cout << "Enters recommendation 6" << std::endl;
       if (Callee.isDiscardableIfUnused() && Callee.hasZeroLiveUses() &&
           !CG.isLibFunction(Callee)) {
         if (Callee.hasLocalLinkage() || !Callee.hasComdat()) {
@@ -477,7 +488,7 @@ PreservedAnalyses InlinerPass::run(LazyCallGraph::SCC &InitialC,
     // Back the call index up by one to put us in a good position to go around
     // the outer loop.
     --I;
-
+    //std::cout << "Enters recommendation 7" << std::endl;
     if (!DidInline)
       continue;
     Changed = true;
@@ -526,7 +537,7 @@ PreservedAnalyses InlinerPass::run(LazyCallGraph::SCC &InitialC,
       UR.InlinedInternalEdges.insert({&N, OldC});
     }
     InlinedCallees.clear();
-
+    //std::cout << "Enters recommendation 8" << std::endl;
     // Invalidate analyses for this function now so that we don't have to
     // invalidate analyses for all functions in this SCC later.
     FAM.invalidate(F, PreservedAnalyses::none());
@@ -599,8 +610,11 @@ ModuleInlinerWrapperPass::ModuleInlinerWrapperPass(InlineParams Params,
     PM.addPass(InlineAdvisorAnalysisPrinterPass(dbgs()));
 }
 
+#include <iostream>
+
 PreservedAnalyses ModuleInlinerWrapperPass::run(Module &M,
                                                 ModuleAnalysisManager &MAM) {
+ //std::cout << "ModuleInlinerWrapperPass::run" << std::endl;
   auto &IAA = MAM.getResult<InlineAdvisorAnalysis>(M);
   if (!IAA.tryCreate(Params, Mode,
                      {CGSCCInlineReplayFile,

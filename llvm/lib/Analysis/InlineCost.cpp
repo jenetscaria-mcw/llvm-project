@@ -309,7 +309,7 @@ protected:
   virtual void onCallPenalty() {}
 
   /// Called to account for a load or store.
-  virtual void onMemAccess(){};
+  virtual void onMemAccess() {};
 
   /// Called to account for the expectation the inlining would result in a load
   /// elimination.
@@ -900,7 +900,8 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
             CurrentSavings += InstrCost;
           }
         } else if (SwitchInst *SI = dyn_cast<SwitchInst>(&I)) {
-          if (isa_and_present<ConstantInt>(SimplifiedValues.lookup(SI->getCondition())))
+          if (isa_and_present<ConstantInt>(
+                  SimplifiedValues.lookup(SI->getCondition())))
             CurrentSavings += InstrCost;
         } else if (Value *V = dyn_cast<Value>(&I)) {
           // Count an instruction as savings if we can fold it.
@@ -3048,6 +3049,63 @@ std::optional<InlineResult> llvm::getAttributeBasedInliningDecision(
   return std::nullopt;
 }
 
+#include "llvm/Demangle/Demangle.h"
+#include <fstream>
+#include <iostream>
+#include <sstream>
+
+static std::unordered_map<std::string, std::string> &getInliningMap() {
+  static std::unordered_map<std::string, std::string> InliningMap;
+
+  static bool loaded = false;
+  if (!loaded) {
+    std::ifstream infile("/home/mcw/kamal/llama.cpp/inline.txt");
+    std::string line;
+    while (std::getline(infile, line)) {
+      size_t tabPos = line.find('\t');
+      if (tabPos == std::string::npos) {
+        continue; // skip malformed lines
+      }
+
+      std::string callee = line.substr(0, tabPos);
+      std::string caller = line.substr(tabPos + 1);
+
+      if (!caller.empty() && !callee.empty()) {
+        InliningMap[callee] = caller;
+      }
+    }
+    loaded = true;
+    infile.close();
+  }
+  return InliningMap;
+}
+
+static std::unordered_map<std::string, std::string> &getNoInliningMap() {
+  static std::unordered_map<std::string, std::string> NoInliningMap;
+
+  static bool loaded = false;
+  if (!loaded) {
+    std::ifstream infile("/home/mcw/kamal/llama.cpp/no_inline.txt");
+    std::string line;
+    while (std::getline(infile, line)) {
+      size_t tabPos = line.find('\t');
+      if (tabPos == std::string::npos) {
+        continue; // skip malformed lines
+      }
+
+      std::string callee = line.substr(0, tabPos);
+      std::string caller = line.substr(tabPos + 1);
+
+      if (!caller.empty() && !callee.empty()) {
+        NoInliningMap[callee] = caller;
+      }
+    }
+    loaded = true;
+    infile.close();
+  }
+  return NoInliningMap;
+}
+
 InlineCost llvm::getInlineCost(
     CallBase &Call, Function *Callee, const InlineParams &Params,
     TargetTransformInfo &CalleeTTI,
@@ -3055,6 +3113,30 @@ InlineCost llvm::getInlineCost(
     function_ref<const TargetLibraryInfo &(Function &)> GetTLI,
     function_ref<BlockFrequencyInfo &(Function &)> GetBFI,
     ProfileSummaryInfo *PSI, OptimizationRemarkEmitter *ORE) {
+
+  auto &InliningMap = getInliningMap();
+  auto &NoInliningMap = getNoInliningMap();
+  // for (const auto &pair : InliningMap) {
+  //   std::cout << pair.first << "\t" << pair.second << std::endl;
+  //   break;
+  // }
+
+  // std::cout << llvm::demangle(Call.getCaller()->getName().str()) << "\t"
+  //           << llvm::demangle(Callee->getName().str()) << "\n";
+
+  if (InliningMap.find(llvm::demangle(Callee->getName().str())) != InliningMap.end() &&
+      InliningMap[llvm::demangle(Callee->getName().str())] ==
+          llvm::demangle(Call.getCaller()->getName().str())) {
+            //std::cout << "Enters inlining map" << std::endl;
+    return llvm::InlineCost::getAlways("always inline based on InliningMap");
+  }
+
+  if (NoInliningMap.find(llvm::demangle(Callee->getName().str())) != NoInliningMap.end() && 
+      NoInliningMap[llvm::demangle(Callee->getName().str())] == 
+      llvm::demangle(Call.getCaller()->getName().str())) {
+        //std::cout << "Enters noninlining map" << std::endl;
+    return llvm::InlineCost::getNever("No inline based on InliningMap");
+  }
 
   auto UserDecision =
       llvm::getAttributeBasedInliningDecision(Call, Callee, CalleeTTI, GetTLI);

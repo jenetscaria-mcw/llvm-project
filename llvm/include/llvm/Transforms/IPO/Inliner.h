@@ -15,6 +15,7 @@
 #include "llvm/Analysis/LazyCallGraph.h"
 #include "llvm/Analysis/Utils/ImportedFunctionsInliningStatistics.h"
 #include "llvm/IR/PassManager.h"
+#include <unordered_map>
 
 namespace llvm {
 
@@ -96,6 +97,8 @@ private:
   CGSCCPassManager PM;
   ModulePassManager MPM;
   ModulePassManager AfterCGMPM;
+  std::unordered_map<std::string, std::string> INLINE_MAP;
+  std::unordered_map<std::string, std::string> NO_INLINE_MAP;
 };
 } // end namespace llvm
 
