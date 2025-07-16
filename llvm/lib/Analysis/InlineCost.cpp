@@ -29,6 +29,7 @@
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Config/llvm-config.h"
+#include "llvm/Demangle/Demangle.h"
 #include "llvm/IR/AssemblyAnnotationWriter.h"
 #include "llvm/IR/CallingConv.h"
 #include "llvm/IR/DataLayout.h"
@@ -44,8 +45,15 @@
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/raw_ostream.h"
 #include <climits>
+#include <fstream>
+#include <iostream>
 #include <limits>
 #include <optional>
+// Demangled name
+//#define INLINEMAPFILENAME "/home/mcw/kamal/llama.cpp/inline.txt"
+//#define NOINLINEMAPFILENAME "/home/mcw/kamal/llama.cpp/no_inline.txt"
+#define INLINEMAPFILENAME "/home/mcw/kamal/llvm-project/inline.txt"
+#define NOINLINEMAPFILENAME "/home/mcw/kamal/llvm-project/no_inline.txt"
 
 using namespace llvm;
 
@@ -3049,17 +3057,12 @@ std::optional<InlineResult> llvm::getAttributeBasedInliningDecision(
   return std::nullopt;
 }
 
-#include "llvm/Demangle/Demangle.h"
-#include <fstream>
-#include <iostream>
-#include <sstream>
-
-static std::unordered_map<std::string, std::string> &getInliningMap() {
-  static std::unordered_map<std::string, std::string> InliningMap;
-
-  static bool loaded = false;
-  if (!loaded) {
-    std::ifstream infile("/home/mcw/kamal/llama.cpp/inline.txt");
+void getMaps(
+    std::unordered_map<std::string, std::string> &InliningMap,
+    std::unordered_map<std::string, std::string> &NoInliningMap) {
+  static bool loaded_inliningmap = false;
+  if (!loaded_inliningmap) {
+    std::ifstream infile(INLINEMAPFILENAME);
     std::string line;
     while (std::getline(infile, line)) {
       size_t tabPos = line.find('\t');
@@ -3074,18 +3077,12 @@ static std::unordered_map<std::string, std::string> &getInliningMap() {
         InliningMap[callee] = caller;
       }
     }
-    loaded = true;
+    loaded_inliningmap = true;
     infile.close();
   }
-  return InliningMap;
-}
-
-static std::unordered_map<std::string, std::string> &getNoInliningMap() {
-  static std::unordered_map<std::string, std::string> NoInliningMap;
-
-  static bool loaded = false;
-  if (!loaded) {
-    std::ifstream infile("/home/mcw/kamal/llama.cpp/no_inline.txt");
+  static bool loaded_noinliningmap = false;
+  if (!loaded_noinliningmap) {
+    std::ifstream infile(NOINLINEMAPFILENAME);
     std::string line;
     while (std::getline(infile, line)) {
       size_t tabPos = line.find('\t');
@@ -3100,10 +3097,9 @@ static std::unordered_map<std::string, std::string> &getNoInliningMap() {
         NoInliningMap[callee] = caller;
       }
     }
-    loaded = true;
+    loaded_noinliningmap = true;
     infile.close();
   }
-  return NoInliningMap;
 }
 
 InlineCost llvm::getInlineCost(
@@ -3114,8 +3110,10 @@ InlineCost llvm::getInlineCost(
     function_ref<BlockFrequencyInfo &(Function &)> GetBFI,
     ProfileSummaryInfo *PSI, OptimizationRemarkEmitter *ORE) {
 
-  auto &InliningMap = getInliningMap();
-  auto &NoInliningMap = getNoInliningMap();
+  static std::unordered_map<std::string, std::string> InliningMap;
+  static std::unordered_map<std::string, std::string> NoInliningMap;
+
+  getMaps(InliningMap, NoInliningMap);
   // for (const auto &pair : InliningMap) {
   //   std::cout << pair.first << "\t" << pair.second << std::endl;
   //   break;
@@ -3124,17 +3122,17 @@ InlineCost llvm::getInlineCost(
   // std::cout << llvm::demangle(Call.getCaller()->getName().str()) << "\t"
   //           << llvm::demangle(Callee->getName().str()) << "\n";
 
-  if (InliningMap.find(llvm::demangle(Callee->getName().str())) != InliningMap.end() &&
-      InliningMap[llvm::demangle(Callee->getName().str())] ==
-          llvm::demangle(Call.getCaller()->getName().str())) {
-            //std::cout << "Enters inlining map" << std::endl;
+  if (InliningMap.find(Callee->getName().str()) != InliningMap.end() &&
+      InliningMap[Callee->getName().str()] ==
+          Call.getCaller()->getName().str()) {
+    std::cout << "Enters inlining map" << std::endl;
     return llvm::InlineCost::getAlways("always inline based on InliningMap");
   }
 
-  if (NoInliningMap.find(llvm::demangle(Callee->getName().str())) != NoInliningMap.end() && 
-      NoInliningMap[llvm::demangle(Callee->getName().str())] == 
-      llvm::demangle(Call.getCaller()->getName().str())) {
-        //std::cout << "Enters noninlining map" << std::endl;
+  if (NoInliningMap.find(Callee->getName().str()) != NoInliningMap.end() &&
+      NoInliningMap[Callee->getName().str()] ==
+          Call.getCaller()->getName().str()) {
+    std::cout << "Enters noninlining map" << std::endl;
     return llvm::InlineCost::getNever("No inline based on InliningMap");
   }
 
