@@ -3125,14 +3125,14 @@ InlineCost llvm::getInlineCost(
   if (InliningMap.find(Callee->getName().str()) != InliningMap.end() &&
       InliningMap[Callee->getName().str()] ==
           Call.getCaller()->getName().str()) {
-    std::cout << "Enters inlining map" << std::endl;
+    //std::cout << "Enters inlining map" << std::endl;
     return llvm::InlineCost::getAlways("always inline based on InliningMap");
   }
 
   if (NoInliningMap.find(Callee->getName().str()) != NoInliningMap.end() &&
       NoInliningMap[Callee->getName().str()] ==
           Call.getCaller()->getName().str()) {
-    std::cout << "Enters noninlining map" << std::endl;
+    //std::cout << "Enters noninlining map" << std::endl;
     return llvm::InlineCost::getNever("No inline based on InliningMap");
   }
 
