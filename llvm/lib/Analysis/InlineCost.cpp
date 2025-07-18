@@ -52,8 +52,8 @@
 // Demangled name
 //#define INLINEMAPFILENAME "/home/mcw/kamal/llama.cpp/inline.txt"
 //#define NOINLINEMAPFILENAME "/home/mcw/kamal/llama.cpp/no_inline.txt"
-#define INLINEMAPFILENAME "/home/mcw/kamal/llvm-project/inline.txt"
-#define NOINLINEMAPFILENAME "/home/mcw/kamal/llvm-project/no_inline.txt"
+#define INLINEMAPFILENAME "/home/mcw/kamal/partial_inlining_txt_files/partial_inlining_without_demangle_passed_missed_true/inline.txt"
+#define NOINLINEMAPFILENAME "/home/mcw/kamal/partial_inlining_txt_files/partial_inlining_without_demangle_passed_missed_true/no_inline.txt"
 
 using namespace llvm;
 
@@ -3125,7 +3125,20 @@ InlineCost llvm::getInlineCost(
   if (InliningMap.find(Callee->getName().str()) != InliningMap.end() &&
       InliningMap[Callee->getName().str()] ==
           Call.getCaller()->getName().str()) {
-    //std::cout << "Enters inlining map" << std::endl;
+    // std::cout << "Enters inlining map" << std::endl;
+    // if (const DebugLoc &DL = Call.getDebugLoc()) {
+    //   const DILocation *Loc = DL.get();
+    //   if (Loc) {
+    //     unsigned Line = Loc->getLine();
+    //     unsigned Col = Loc->getColumn();
+    //     StringRef File = Loc->getFilename();
+    //     StringRef Dir = Loc->getDirectory(); // optional
+    //     StringRef ScopeFile = Loc->getScope()->getFilename();
+
+    //     // Print or match
+    //     std::cout << "Callsite: " << File.str() << ":" << Line << ":" << Col << "\n";
+    //   }
+    // }
     return llvm::InlineCost::getAlways("always inline based on InliningMap");
   }
 
