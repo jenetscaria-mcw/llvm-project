@@ -79,6 +79,11 @@
 #include <cstdint>
 #include <optional>
 #include <utility>
+#include <fstream>
+#include <unordered_set>
+#include <mutex>
+#include <string>
+#include <iostream>
 
 using namespace llvm;
 using namespace llvm::gvn;
@@ -818,6 +823,25 @@ PreservedAnalyses GVNPass::run(Function &F, FunctionAnalysisManager &AM) {
   // significant! Re-ordering these variables will cause GVN when run alone to
   // be less effective! We should fix memdep and basic-aa to not exhibit this
   // behavior, but until then don't change the order here.
+  std::cout << "Running GVN on function: " << F.getName().str();
+  static std::unordered_set<std::string> Allowlist;
+  static std::once_flag LoadFlag;
+
+  std::call_once(LoadFlag, []() {
+    std::ifstream infile("gvn_allowlist.txt");
+    std::string line;
+    while (std::getline(infile, line)) {
+      if (!line.empty())
+        Allowlist.insert(line);
+    }
+  });
+
+  bool ForceGVN = Allowlist.count(F.getName().str()) > 0;
+
+  std::cout << "Running GVN on function: " << F.getName().str();
+  if (ForceGVN) std::cout << " [FORCED]" ;
+  std::cout << std::endl;
+
   auto &AC = AM.getResult<AssumptionAnalysis>(F);
   auto &DT = AM.getResult<DominatorTreeAnalysis>(F);
   auto &TLI = AM.getResult<TargetLibraryAnalysis>(F);
@@ -829,6 +853,11 @@ PreservedAnalyses GVNPass::run(Function &F, FunctionAnalysisManager &AM) {
   auto &ORE = AM.getResult<OptimizationRemarkEmitterAnalysis>(F);
   bool Changed = runImpl(F, AC, DT, TLI, AA, MemDep, LI, &ORE,
                          MSSA ? &MSSA->getMSSA() : nullptr);
+  // If the function is in the allowlist, pretend GVN always made a change
+  if (ForceGVN)
+    Changed = true;
+
+  std::cout << "Changed: " << Changed << std::endl;
   if (!Changed)
     return PreservedAnalyses::all();
   PreservedAnalyses PA;
