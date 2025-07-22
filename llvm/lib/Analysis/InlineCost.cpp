@@ -309,7 +309,7 @@ protected:
   virtual void onCallPenalty() {}
 
   /// Called to account for a load or store.
-  virtual void onMemAccess(){};
+  virtual void onMemAccess() {};
 
   /// Called to account for the expectation the inlining would result in a load
   /// elimination.
@@ -900,7 +900,8 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
             CurrentSavings += InstrCost;
           }
         } else if (SwitchInst *SI = dyn_cast<SwitchInst>(&I)) {
-          if (isa_and_present<ConstantInt>(SimplifiedValues.lookup(SI->getCondition())))
+          if (isa_and_present<ConstantInt>(
+                  SimplifiedValues.lookup(SI->getCondition())))
             CurrentSavings += InstrCost;
         } else if (Value *V = dyn_cast<Value>(&I)) {
           // Count an instruction as savings if we can fold it.
@@ -2937,6 +2938,10 @@ InlineCost llvm::getInlineCost(
     ProfileSummaryInfo *PSI, OptimizationRemarkEmitter *ORE) {
   return getInlineCost(Call, Call.getCalledFunction(), Params, CalleeTTI,
                        GetAssumptionCache, GetTLI, GetBFI, PSI, ORE);
+  // return getInlineCost(Call, Call.getCalledFunction(), Params, CalleeTTI,
+  //                      GetAssumptionCache, GetTLI,
+  //                      llvm::function_ref<BlockFrequencyInfo &(Function
+  //                      &)>(), nullptr, ORE);
 }
 
 std::optional<int> llvm::getInliningCostEstimate(
@@ -3048,6 +3053,8 @@ std::optional<InlineResult> llvm::getAttributeBasedInliningDecision(
   return std::nullopt;
 }
 
+#include <iostream>
+
 InlineCost llvm::getInlineCost(
     CallBase &Call, Function *Callee, const InlineParams &Params,
     TargetTransformInfo &CalleeTTI,
@@ -3056,6 +3063,36 @@ InlineCost llvm::getInlineCost(
     function_ref<BlockFrequencyInfo &(Function &)> GetBFI,
     ProfileSummaryInfo *PSI, OptimizationRemarkEmitter *ORE) {
 
+  if (PSI) {
+    std::cout << "[InlineCost] PSI is not null\n";
+    if (PSI->hasSampleProfile())
+      std::cout << "[InlineCost] Sample profile detected.\n";
+    if (PSI->hasInstrumentationProfile())
+      std::cout << "[InlineCost] Instrumentation profile detected.\n";
+  } else {
+    std::cout << "[InlineCost] PSI is null\n";
+  }
+
+  if (GetBFI) {
+    Function *Caller = Call.getCaller();
+    BlockFrequencyInfo &CallerBFI = GetBFI(*Caller);
+    const BasicBlock *Entry = &Caller->getEntryBlock();
+    auto EntryFreq = CallerBFI.getBlockFreq(Entry).getFrequency();
+    std::cout << "[InlineCost] Caller: " << Caller->getName().str()
+              << ", Entry block freq: " << EntryFreq << "\n";
+  } else {
+    std::cout << "[InlineCost] BFI is empty\n";
+  }
+  // if (!GetBFI) {
+  //   std::cout << "IF GETBFI" << std::endl;
+  // } else {
+  //   std::cout << "ELSE GETBFI" << std::endl;
+  // }
+  // if (!PSI) {
+  //   std::cout << "IF PSI" << std::endl;
+  // } else {
+  //   std::cout << "ELSE PSI" << std::endl;
+  // }
   auto UserDecision =
       llvm::getAttributeBasedInliningDecision(Call, Callee, CalleeTTI, GetTLI);
 
