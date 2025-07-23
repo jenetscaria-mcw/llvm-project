@@ -92,6 +92,9 @@ using namespace PatternMatch;
 
 #define DEBUG_TYPE "gvn"
 
+
+#define GVNPASSFILE "gvn_passlist.txt"
+
 STATISTIC(NumGVNInstr, "Number of instructions deleted");
 STATISTIC(NumGVNLoad, "Number of loads deleted");
 STATISTIC(NumGVNPRE, "Number of instructions PRE'd");
@@ -823,12 +826,10 @@ PreservedAnalyses GVNPass::run(Function &F, FunctionAnalysisManager &AM) {
   // significant! Re-ordering these variables will cause GVN when run alone to
   // be less effective! We should fix memdep and basic-aa to not exhibit this
   // behavior, but until then don't change the order here.
-  std::cout << "Running GVN on function: " << F.getName().str();
   static std::unordered_set<std::string> Allowlist;
   static std::once_flag LoadFlag;
-
   std::call_once(LoadFlag, []() {
-    std::ifstream infile("gvn_allowlist.txt");
+    std::ifstream infile(GVNPASSFILE);
     std::string line;
     while (std::getline(infile, line)) {
       if (!line.empty())
@@ -836,9 +837,8 @@ PreservedAnalyses GVNPass::run(Function &F, FunctionAnalysisManager &AM) {
     }
   });
 
+  std::cout << "Running GVN on function: " << F.getName().str()<<std::endl;
   bool ForceGVN = Allowlist.count(F.getName().str()) > 0;
-
-  std::cout << "Running GVN on function: " << F.getName().str();
   if (ForceGVN) std::cout << " [FORCED]" ;
   std::cout << std::endl;
 
@@ -2788,6 +2788,7 @@ bool GVNPass::runImpl(Function &F, AssumptionCache &RunAC, DominatorTree &RunDT,
                       const TargetLibraryInfo &RunTLI, AAResults &RunAA,
                       MemoryDependenceResults *RunMD, LoopInfo &LI,
                       OptimizationRemarkEmitter *RunORE, MemorySSA *MSSA) {
+  // std::cout << "Running GVN Impl on function: " << F.getName().str()<<std::endl;
   AC = &RunAC;
   DT = &RunDT;
   VN.setDomTree(DT);
