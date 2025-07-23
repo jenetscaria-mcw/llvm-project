@@ -94,7 +94,7 @@ using namespace PatternMatch;
 #define DEBUG_TYPE "gvn"
 
 
-#define GVNPASSFILE "gvn_passlist.txt"
+#define GVNPASSFILE "/mnt/Data/Jenet/new-clone/llvm-project/GVN_extract_passed.txt"
 
 enum GVNMode {
   GVN_All,        // default
@@ -2817,7 +2817,7 @@ bool GVNPass::runImpl(Function &F, AssumptionCache &RunAC, DominatorTree &RunDT,
                       const TargetLibraryInfo &RunTLI, AAResults &RunAA,
                       MemoryDependenceResults *RunMD, LoopInfo &LI,
                       OptimizationRemarkEmitter *RunORE, MemorySSA *MSSA,
-                      std::optional<std::string> Mode = std::nullopt) {
+                      std::optional<std::string> Mode) {
   // std::cout << "Running GVN Impl on function: " << F.getName().str()<<std::endl;
   AC = &RunAC;
   DT = &RunDT;
