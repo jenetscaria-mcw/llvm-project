@@ -84,6 +84,7 @@
 #include <mutex>
 #include <string>
 #include <iostream>
+#include <sstream>
 
 using namespace llvm;
 using namespace llvm::gvn;
@@ -94,6 +95,13 @@ using namespace PatternMatch;
 
 
 #define GVNPASSFILE "gvn_passlist.txt"
+
+enum GVNMode {
+  GVN_All,        // default
+  GVN_LoadElim,
+  GVN_LoadPRE
+};
+std::unordered_map<std::string, GVNMode> GVNConfigMap;
 
 STATISTIC(NumGVNInstr, "Number of instructions deleted");
 STATISTIC(NumGVNLoad, "Number of loads deleted");
@@ -832,12 +840,33 @@ PreservedAnalyses GVNPass::run(Function &F, FunctionAnalysisManager &AM) {
     std::ifstream infile(GVNPASSFILE);
     std::string line;
     while (std::getline(infile, line)) {
-      if (!line.empty())
-        Allowlist.insert(line);
+      std::istringstream iss(line);
+      std::string FuncName, Mode;
+      if (!(iss >> FuncName >> Mode)) continue;
+
+      if (Mode == "LoadElim")
+        GVNConfigMap[FuncName] = GVN_LoadElim;
+      else if (Mode == "LoadPRE")
+        GVNConfigMap[FuncName] = GVN_LoadPRE;
+      else
+        GVNConfigMap[FuncName] = GVN_All;
+
+      Allowlist.insert(FuncName);
     }
+
   });
 
-  std::cout << "Running GVN on function: " << F.getName().str()<<std::endl;
+  std::optional<std::string> Mode;
+  auto It = GVNConfigMap.find(F.getName().str());
+  if (It != GVNConfigMap.end()) {
+    switch (It->second) {
+      case GVN_LoadElim: Mode = "LoadElim"; break;
+      case GVN_LoadPRE:  Mode = "LoadPRE";  break;
+      case GVN_All:      Mode = "All";      break;
+    }
+    std::cout << "Running GVN mode " << *Mode << " for function: " << F.getName().str();
+  }
+
   bool ForceGVN = Allowlist.count(F.getName().str()) > 0;
   if (ForceGVN) std::cout << " [FORCED]" ;
   std::cout << std::endl;
@@ -852,7 +881,7 @@ PreservedAnalyses GVNPass::run(Function &F, FunctionAnalysisManager &AM) {
   auto *MSSA = AM.getCachedResult<MemorySSAAnalysis>(F);
   auto &ORE = AM.getResult<OptimizationRemarkEmitterAnalysis>(F);
   bool Changed = runImpl(F, AC, DT, TLI, AA, MemDep, LI, &ORE,
-                         MSSA ? &MSSA->getMSSA() : nullptr);
+                         MSSA ? &MSSA->getMSSA() : nullptr, Mode);
   // If the function is in the allowlist, pretend GVN always made a change
   if (ForceGVN)
     Changed = true;
@@ -2787,7 +2816,8 @@ bool GVNPass::processInstruction(Instruction *I) {
 bool GVNPass::runImpl(Function &F, AssumptionCache &RunAC, DominatorTree &RunDT,
                       const TargetLibraryInfo &RunTLI, AAResults &RunAA,
                       MemoryDependenceResults *RunMD, LoopInfo &LI,
-                      OptimizationRemarkEmitter *RunORE, MemorySSA *MSSA) {
+                      OptimizationRemarkEmitter *RunORE, MemorySSA *MSSA,
+                      std::optional<std::string> Mode = std::nullopt) {
   // std::cout << "Running GVN Impl on function: " << F.getName().str()<<std::endl;
   AC = &RunAC;
   DT = &RunDT;
@@ -2819,16 +2849,20 @@ bool GVNPass::runImpl(Function &F, AssumptionCache &RunAC, DominatorTree &RunDT,
   }
   DTU.flush();
 
-  unsigned Iteration = 0;
-  while (ShouldContinue) {
-    LLVM_DEBUG(dbgs() << "GVN iteration: " << Iteration << "\n");
-    (void) Iteration;
-    ShouldContinue = iterateOnFunction(F);
-    Changed |= ShouldContinue;
-    ++Iteration;
+  if (!Mode.has_value() || Mode.value() == std::string("LoadElim") ||
+      Mode.value() == std::string("All")) {
+    unsigned Iteration = 0;
+    while (ShouldContinue) {
+      LLVM_DEBUG(dbgs() << "GVN iteration: " << Iteration << "\n");
+      (void) Iteration;
+      ShouldContinue = iterateOnFunction(F);
+      Changed |= ShouldContinue;
+      ++Iteration;
+    }
   }
 
-  if (isPREEnabled()) {
+  if (isPREEnabled() && (!Mode.has_value() || Mode.value() == "LoadPRE"
+      || Mode.value() == std::string("All"))) {
     // Fabricate val-num for dead-code in order to suppress assertion in
     // performPRE().
     assignValNumForDeadCode();
