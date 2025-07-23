@@ -316,7 +316,8 @@ private:
   bool runImpl(Function &F, AssumptionCache &RunAC, DominatorTree &RunDT,
                const TargetLibraryInfo &RunTLI, AAResults &RunAA,
                MemoryDependenceResults *RunMD, LoopInfo &LI,
-               OptimizationRemarkEmitter *ORE, MemorySSA *MSSA = nullptr);
+               OptimizationRemarkEmitter *ORE, MemorySSA *MSSA = nullptr,
+               std::optional<std::string> Mode = std::nullopt);
 
   // List of critical edges to be split between iterations.
   SmallVector<std::pair<Instruction *, unsigned>, 4> toSplit;
