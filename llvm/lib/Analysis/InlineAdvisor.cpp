@@ -47,6 +47,10 @@ static cl::opt<bool>
                                    " callsites processed by inliner but decided"
                                    " to be not inlined"));
 
+cl::opt<bool> DisablePGOInline(
+    "disable-pgo-inline", cl::Hidden, cl::init(true),
+    cl::desc("Disable PGO-based inlining decisions in the inliner (ignore PSI, but keep BFI for static heuristics)"));
+
 static cl::opt<bool> EnableInlineDeferral("inline-deferral", cl::init(false),
                                           cl::Hidden,
                                           cl::desc("Enable deferred inlining"));

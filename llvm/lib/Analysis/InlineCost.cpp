@@ -173,9 +173,7 @@ static cl::opt<bool> DisableGEPConstOperand(
     "disable-gep-const-evaluation", cl::Hidden, cl::init(false),
     cl::desc("Disables evaluation of GetElementPtr with constant operands"));
 
-static cl::opt<bool> DisablePGOInline(
-    "disable-pgo-inline", cl::Hidden, cl::init(false),
-    cl::desc("Disable PGO-based inlining decisions in the inliner (ignore PSI, but keep BFI for static heuristics)"));
+extern llvm::cl::opt<bool> DisablePGOInline;
 
 namespace llvm {
 std::optional<int> getStringFnAttrAsInt(const Attribute &Attr) {
@@ -3071,7 +3069,7 @@ InlineCost llvm::getInlineCost(
     PSI = nullptr;
   }
 
-  if (PSI) {
+  /* if (PSI) {
     std::cout << "[InlineCost] PSI is not null\n";
     if (PSI->hasSampleProfile())
       std::cout << "[InlineCost] Sample profile detected.\n";
@@ -3090,7 +3088,7 @@ InlineCost llvm::getInlineCost(
               << ", Entry block freq: " << EntryFreq << "\n";
   } else {
     std::cout << "[InlineCost] BFI is empty\n";
-  }
+  } */
   // if (!GetBFI) {
   //   std::cout << "IF GETBFI" << std::endl;
   // } else {

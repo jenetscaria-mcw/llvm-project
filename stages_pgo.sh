@@ -7,7 +7,8 @@ fi
 
 
 PROCESS_NAME=$1
-FLAGS=$2
+shift
+FLAGS=$@
 CWD="$(pwd)"
 
 #clang stage 1
