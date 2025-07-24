@@ -31,7 +31,7 @@ sudo make -C "${PROCESS_NAME}_test_3" check-clang -j12
 
 #perf_data generation
 export PATH="${CWD}/${PROCESS_NAME}_test_1/bin/":$PATH
-llvm-profdata merge -output="${CWD}/${PROCESS_NAME}.prof" "${PROCESS_NAME}_test_2/profiles/*.profraw"
+llvm-profdata merge -output="${CWD}/${PROCESS_NAME}.prof" ${PROCESS_NAME}_test_2/profiles/*.profraw
 
 export PATH="${CWD}/${PROCESS_NAME}_test_1/bin/":$PATH
 cmake -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DLLVM_PROFDATA_FILE="${CWD}/${PROCESS_NAME}.prof" -DLLVM_ENABLE_PROJECTS=clang -DCMAKE_INSTALL_PREFIX=../install -S llvm -B "${PROCESS_NAME}_test_pgo"
