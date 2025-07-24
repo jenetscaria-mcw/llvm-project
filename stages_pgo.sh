@@ -36,5 +36,5 @@ llvm-profdata merge -output="${CWD}/${PROCESS_NAME}.prof" "${PROCESS_NAME}_test_
 #exit(0)
 
 #export PATH="${CWD}/${PROCESS_NAME}_test_1/bin/":$PATH
-#cmake -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_FLAGS="${FLAGS}" -DCMAKE_CXX_FLAGS="${FLAGS}" -DLLVM_PROFDATA_FILE="${CWD}/${PROCESS_NAME}.prof" -DLLVM_ENABLE_PROJECTS=clang -DCMAKE_INSTALL_PREFIX=../install -S llvm -B "${PROCESS_NAME}_test_pgo"
+#cmake -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_FLAGS="-mllvm ${FLAGS}" -DCMAKE_CXX_FLAGS="-mllvm ${FLAGS}" -DLLVM_PROFDATA_FILE="${CWD}/${PROCESS_NAME}.prof" -DLLVM_ENABLE_PROJECTS=clang -DCMAKE_INSTALL_PREFIX=../install -S llvm -B "${PROCESS_NAME}_test_pgo"
 #cmake --build "${PROCESS_NAME}_test_pgo" --config Release -- -j6 VERBOSE=1
