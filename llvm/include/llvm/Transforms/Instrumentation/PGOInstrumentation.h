@@ -25,7 +25,6 @@
 namespace llvm {
 
 extern cl::opt<bool> DebugInfoCorrelate;
-extern cl::opt<bool> DisablePGOToBFI;
 
 class Function;
 class Instruction;

@@ -338,7 +338,7 @@ extern cl::opt<bool> EnableVTableProfileUse;
 extern cl::opt<InstrProfCorrelator::ProfCorrelatorKind> ProfileCorrelate;
 } // namespace llvm
 
-cl::opt<bool> DisablePGOToBFI(
+static cl::opt<bool> DisablePGOToBFI(
     "disable-pgo-to-bfi", cl::Hidden, cl::init(false),
     cl::desc("Disable writing PGO profile data to IR for BFI (setEntryCount/setBranchWeights)"));
 
