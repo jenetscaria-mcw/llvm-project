@@ -18,6 +18,7 @@
 #include "mlir/Analysis/CallGraph.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Inliner.h"
+#include <iostream>
 
 namespace mlir {
 #define GEN_PASS_DEF_INLINER
@@ -142,6 +143,7 @@ void InlinerPass::runOnOperation() {
     return isProfitableToInline(call, inliningThreshold);
   };
 
+  //std::cout << "This instance ok" << std::endl;
   // Get an instance of the inliner.
   Inliner inliner(op, cg, *this, getAnalysisManager(), runPipelineHelper,
                   config, profitabilityCb);

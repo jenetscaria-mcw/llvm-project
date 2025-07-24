@@ -29,6 +29,7 @@
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Config/llvm-config.h"
+#include "llvm/Demangle/Demangle.h"
 #include "llvm/IR/AssemblyAnnotationWriter.h"
 #include "llvm/IR/CallingConv.h"
 #include "llvm/IR/DataLayout.h"
@@ -44,8 +45,15 @@
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/raw_ostream.h"
 #include <climits>
+#include <fstream>
+#include <iostream>
 #include <limits>
 #include <optional>
+// Demangled name
+//#define INLINEMAPFILENAME "/home/mcw/kamal/llama.cpp/inline.txt"
+//#define NOINLINEMAPFILENAME "/home/mcw/kamal/llama.cpp/no_inline.txt"
+#define INLINEMAPFILENAME "/home/mcw/kamal/partial_inlining_txt_files/partial_inlining_without_demangle_passed_missed_true/inline.txt"
+#define NOINLINEMAPFILENAME "/home/mcw/kamal/partial_inlining_txt_files/partial_inlining_without_demangle_passed_missed_true/no_inline.txt"
 
 using namespace llvm;
 
@@ -309,7 +317,7 @@ protected:
   virtual void onCallPenalty() {}
 
   /// Called to account for a load or store.
-  virtual void onMemAccess(){};
+  virtual void onMemAccess() {};
 
   /// Called to account for the expectation the inlining would result in a load
   /// elimination.
@@ -900,7 +908,8 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
             CurrentSavings += InstrCost;
           }
         } else if (SwitchInst *SI = dyn_cast<SwitchInst>(&I)) {
-          if (isa_and_present<ConstantInt>(SimplifiedValues.lookup(SI->getCondition())))
+          if (isa_and_present<ConstantInt>(
+                  SimplifiedValues.lookup(SI->getCondition())))
             CurrentSavings += InstrCost;
         } else if (Value *V = dyn_cast<Value>(&I)) {
           // Count an instruction as savings if we can fold it.
@@ -3048,6 +3057,51 @@ std::optional<InlineResult> llvm::getAttributeBasedInliningDecision(
   return std::nullopt;
 }
 
+void getMaps(
+    std::unordered_map<std::string, std::string> &InliningMap,
+    std::unordered_map<std::string, std::string> &NoInliningMap) {
+  static bool loaded_inliningmap = false;
+  if (!loaded_inliningmap) {
+    std::ifstream infile(INLINEMAPFILENAME);
+    std::string line;
+    while (std::getline(infile, line)) {
+      size_t tabPos = line.find('\t');
+      if (tabPos == std::string::npos) {
+        continue; // skip malformed lines
+      }
+
+      std::string callee = line.substr(0, tabPos);
+      std::string caller = line.substr(tabPos + 1);
+
+      if (!caller.empty() && !callee.empty()) {
+        InliningMap[callee] = caller;
+      }
+    }
+    loaded_inliningmap = true;
+    infile.close();
+  }
+  static bool loaded_noinliningmap = false;
+  if (!loaded_noinliningmap) {
+    std::ifstream infile(NOINLINEMAPFILENAME);
+    std::string line;
+    while (std::getline(infile, line)) {
+      size_t tabPos = line.find('\t');
+      if (tabPos == std::string::npos) {
+        continue; // skip malformed lines
+      }
+
+      std::string callee = line.substr(0, tabPos);
+      std::string caller = line.substr(tabPos + 1);
+
+      if (!caller.empty() && !callee.empty()) {
+        NoInliningMap[callee] = caller;
+      }
+    }
+    loaded_noinliningmap = true;
+    infile.close();
+  }
+}
+
 InlineCost llvm::getInlineCost(
     CallBase &Call, Function *Callee, const InlineParams &Params,
     TargetTransformInfo &CalleeTTI,
@@ -3055,6 +3109,45 @@ InlineCost llvm::getInlineCost(
     function_ref<const TargetLibraryInfo &(Function &)> GetTLI,
     function_ref<BlockFrequencyInfo &(Function &)> GetBFI,
     ProfileSummaryInfo *PSI, OptimizationRemarkEmitter *ORE) {
+
+  static std::unordered_map<std::string, std::string> InliningMap;
+  static std::unordered_map<std::string, std::string> NoInliningMap;
+
+  getMaps(InliningMap, NoInliningMap);
+  // for (const auto &pair : InliningMap) {
+  //   std::cout << pair.first << "\t" << pair.second << std::endl;
+  //   break;
+  // }
+
+  // std::cout << llvm::demangle(Call.getCaller()->getName().str()) << "\t"
+  //           << llvm::demangle(Callee->getName().str()) << "\n";
+
+  if (InliningMap.find(Callee->getName().str()) != InliningMap.end() &&
+      InliningMap[Callee->getName().str()] ==
+          Call.getCaller()->getName().str()) {
+    // std::cout << "Enters inlining map" << std::endl;
+    // if (const DebugLoc &DL = Call.getDebugLoc()) {
+    //   const DILocation *Loc = DL.get();
+    //   if (Loc) {
+    //     unsigned Line = Loc->getLine();
+    //     unsigned Col = Loc->getColumn();
+    //     StringRef File = Loc->getFilename();
+    //     StringRef Dir = Loc->getDirectory(); // optional
+    //     StringRef ScopeFile = Loc->getScope()->getFilename();
+
+    //     // Print or match
+    //     std::cout << "Callsite: " << File.str() << ":" << Line << ":" << Col << "\n";
+    //   }
+    // }
+    return llvm::InlineCost::getAlways("always inline based on InliningMap");
+  }
+
+  if (NoInliningMap.find(Callee->getName().str()) != NoInliningMap.end() &&
+      NoInliningMap[Callee->getName().str()] ==
+          Call.getCaller()->getName().str()) {
+    //std::cout << "Enters noninlining map" << std::endl;
+    return llvm::InlineCost::getNever("No inline based on InliningMap");
+  }
 
   auto UserDecision =
       llvm::getAttributeBasedInliningDecision(Call, Callee, CalleeTTI, GetTLI);

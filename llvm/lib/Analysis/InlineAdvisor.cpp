@@ -27,6 +27,7 @@
 #include "llvm/IR/PassManager.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/raw_ostream.h"
+#include <iostream>
 
 using namespace llvm;
 #define DEBUG_TYPE "inline"
@@ -204,6 +205,7 @@ bool PluginInlineAdvisorAnalysis::HasBeenRegistered = false;
 bool InlineAdvisorAnalysis::Result::tryCreate(
     InlineParams Params, InliningAdvisorMode Mode,
     const ReplayInlinerSettings &ReplaySettings, InlineContext IC) {
+  //std::cout << "TryCreate" << std::endl;
   auto &FAM = MAM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
   if (PluginInlineAdvisorAnalysis::HasBeenRegistered) {
     auto &DA = MAM.getResult<PluginInlineAdvisorAnalysis>(M);
