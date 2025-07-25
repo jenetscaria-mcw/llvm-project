@@ -2937,6 +2937,9 @@ InlineCost llvm::getInlineCost(
     ProfileSummaryInfo *PSI, OptimizationRemarkEmitter *ORE) {
   return getInlineCost(Call, Call.getCalledFunction(), Params, CalleeTTI,
                        GetAssumptionCache, GetTLI, GetBFI, PSI, ORE);
+  // return getInlineCost(Call, Call.getCalledFunction(), Params, CalleeTTI,
+	// GetAssumptionCache, GetTLI, llvm::function_ref<BlockFrequencyInfo &(Function &)>(), nullptr, ORE);
+
 }
 
 std::optional<int> llvm::getInliningCostEstimate(

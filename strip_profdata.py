@@ -5,11 +5,10 @@ import os
 import re
 
 def strip_inliner_from_profdata(input_profdata, output_profdata):
-    # Dump the profile to text
     with tempfile.NamedTemporaryFile(delete=False, mode='w+') as temp_txt:
         temp_txt_name = temp_txt.name
 
-    subprocess.run(['llvm-profdata', 'show', input_profdata], stdout=open(temp_txt_name, 'w'), check=True)
+    subprocess.run(['llvm-profdata', 'merge', '--text', input_profdata, '-o', temp_txt_name], check=True)
 
     # Read and filter the text
     with open(temp_txt_name, 'r') as f:
@@ -21,18 +20,19 @@ def strip_inliner_from_profdata(input_profdata, output_profdata):
     func_buffer = []
 
     for line in lines:
-        if line.startswith('Function:'):
-            # Check if the function name contains 'inliner'
-            func_name = line.split('Function:')[1].strip()
+        print (line)
+        if line.startswith('function: '):
+            print (line)
+            func_name = line.split('function: ')[1].strip()
             keep_func = not re.search(r'inliner', func_name, re.IGNORECASE)
             in_func = True
             func_buffer = [line]
-        elif in_func and (line.startswith('---') or line.strip() == ''):
-            # End of function record
+        elif in_func and line.strip() == '':
             if keep_func:
                 filtered_lines.extend(func_buffer)
-            filtered_lines.append(line)
+                filtered_lines.append(line)  # blank line to separate functions
             in_func = False
+            print (func_buffer)
             func_buffer = []
         elif in_func:
             func_buffer.append(line)
