@@ -1472,8 +1472,8 @@ void PGOUseFunc::populateCoverage(IndexedInstrProfReader *PGOReader) {
   MDBuilder MDB(F.getContext());
   // We set the entry count to 10000 if the entry block is covered so that BFI
   // can propagate a fraction of this count to the other covered blocks.
-  if (!DisablePGOToBFI)
-    F.setEntryCount(Coverage[&F.getEntryBlock()] ? 10000 : 0);
+  //if (!DisablePGOToBFI)
+  //  F.setEntryCount(Coverage[&F.getEntryBlock()] ? 10000 : 0);
   for (auto &BB : F) {
     // For a block A and its successor B, we set the edge weight as follows:
     // If A is covered and B is covered, set weight=1.
@@ -1484,7 +1484,7 @@ void PGOUseFunc::populateCoverage(IndexedInstrProfReader *PGOReader) {
     SmallVector<uint32_t, 4> Weights;
     for (auto *Succ : successors(&BB))
       Weights.push_back((Coverage[Succ] || !Coverage[&BB]) ? 1 : 0);
-    if (Weights.size() >= 2 && !DisablePGOToBFI)
+    if (Weights.size() >= 2 && false) //!DisablePGOToBFI)
       llvm::setBranchWeights(*BB.getTerminator(), Weights,
                              /*IsExpected=*/false);
   }
@@ -1601,8 +1601,8 @@ void PGOUseFunc::populateCounters() {
   // Fix the obviously inconsistent entry count.
   if (FuncMaxCount > 0 && FuncEntryCount == 0)
     FuncEntryCount = 1;
-  if (!DisablePGOToBFI)
-    F.setEntryCount(ProfileCount(FuncEntryCount, Function::PCT_Real));
+  //if (!DisablePGOToBFI)
+  //  F.setEntryCount(ProfileCount(FuncEntryCount, Function::PCT_Real));
   markFunctionAttributes(FuncEntryCount, FuncMaxCount);
 
   // Now annotate select instructions
@@ -1614,7 +1614,7 @@ void PGOUseFunc::populateCounters() {
 
 // Assign the scaled count values to the BB with multiple out edges.
 void PGOUseFunc::setBranchWeights() {
-  if (DisablePGOToBFI)
+  if (true)//DisablePGOToBFI)
     return;
   // Generate MD_prof metadata for every branch instruction.
   LLVM_DEBUG(dbgs() << "\nSetting branch weights for func " << F.getName()

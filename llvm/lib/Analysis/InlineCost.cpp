@@ -3065,9 +3065,9 @@ InlineCost llvm::getInlineCost(
     function_ref<BlockFrequencyInfo &(Function &)> GetBFI,
     ProfileSummaryInfo *PSI, OptimizationRemarkEmitter *ORE) {
 
-  if (DisablePGOInline) {
+  //if (DisablePGOInline) {
     PSI = nullptr;
-  }
+  //}
 
   /* if (PSI) {
     std::cout << "[InlineCost] PSI is not null\n";
