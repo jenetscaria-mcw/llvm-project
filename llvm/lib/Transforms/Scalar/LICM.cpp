@@ -85,7 +85,21 @@
 #include "llvm/Transforms/Utils/SSAUpdater.h"
 #include <algorithm>
 #include <utility>
+#include <iostream>
 using namespace llvm;
+
+namespace {
+/// Calculate the nesting level of a loop (1 = outermost, 2 = nested inside 1, etc.)
+static unsigned getLoopNestLevel(const Loop *L) {
+  unsigned Level = 1;
+  const Loop *Parent = L->getParentLoop();
+  while (Parent) {
+    Level++;
+    Parent = Parent->getParentLoop();
+  }
+  return Level;
+}
+}
 
 namespace llvm {
 class LPMUpdater;
@@ -293,6 +307,68 @@ private:
 
 PreservedAnalyses LICMPass::run(Loop &L, LoopAnalysisManager &AM,
                                 LoopStandardAnalysisResults &AR, LPMUpdater &) {
+
+  // // std::string targetFunc = "_ZN12_GLOBAL__N_115tinyBLAS_Q0_AVXI10block_q8_0S1_fE4gemmILi2ELi2EEEvllll";
+  // Function *F = L.getHeader()->getParent();
+
+  // // Print detailed loop information
+  // errs() << "\n=== LICMPass: Loop Information ===" << "\n";
+  // errs() << "Function: " << F->getName() << "\n";
+  // errs() << "Loop Header: " << L.getHeader()->getName() << "\n";
+  // // errs() << "Loop Latch: " << (L.getLatch() ? L.getLatch()->getName() : "None") << "\n";
+  // errs() << "Loop Latch: "<< (L.getLoopLatch() ? L.getLoopLatch()->getName() : "None") << "\n";
+
+  // // Print loop structure
+  // errs() << "Loop Structure:\n";
+  // errs() << "  - Is Loop Simplify Form: " << (L.isLoopSimplifyForm() ? "Yes" : "No") << "\n";
+  // errs() << "  - Has Dedicated Exits: " << (L.hasDedicatedExits() ? "Yes" : "No") << "\n";
+  // errs() << "  - Has Preheader: " << (L.getLoopPreheader() ? "Yes" : "No") << "\n";
+  // if (L.getLoopPreheader()) {
+  //   errs() << "  - Preheader Block: " << L.getLoopPreheader()->getName() << "\n";
+  // }
+
+  // // Print loop hierarchy
+  // errs() << "Loop Hierarchy:\n";
+  // errs() << "  - Parent Loop: " << (L.getParentLoop() ? L.getParentLoop()->getHeader()->getName() : "None") << "\n";
+  // errs() << "  - Nesting Level: " << L.getLoopDepth() << "\n";
+  // errs() << "  - Number of SubLoops: " << L.getSubLoops().size() << "\n";
+
+  // // Print loop blocks
+  // errs() << "Loop Blocks (" << L.getNumBlocks() << " total):\n";
+  // for (BasicBlock *BB : L.getBlocks()) {
+  //   errs() << "  - " << BB->getName();
+  //   if (BB == L.getHeader()) errs() << " (Header)";
+  //   if (BB == L.getLoopLatch()) errs() << " (Latch)";
+  //   errs() << "\n";
+  // }
+
+  // // Print exit blocks
+  // SmallVector<BasicBlock*, 8> ExitBlocks;
+  // L.getUniqueExitBlocks(ExitBlocks);
+  // errs() << "Exit Blocks (" << ExitBlocks.size() << " total):\n";
+  // for (BasicBlock *ExitBB : ExitBlocks) {
+  //   errs() << "  - " << ExitBB->getName() << "\n";
+  // }
+
+  // // Print loop bounds (if available)
+  // errs() << "Loop Bounds Analysis:\n";
+  // if (const SCEV *TripCount = AR.SE.getBackedgeTakenCount(&L)) {
+  //     errs() << "  - Trip Count: " << *TripCount << "\n";
+  // }
+
+  // // Print loop invariant operands
+  // errs() << "Loop Invariant Analysis:\n";
+  // for (BasicBlock *BB : L.getBlocks()) {
+  //   for (Instruction &I : *BB) {
+  //     if (L.hasLoopInvariantOperands(&I)) {
+  //       errs() << "  - Instruction with invariant operands: " << I << "\n";
+  //     }
+  //   }
+  // }
+
+  // errs() << "=== End Loop Information ===\n\n";
+
+
   if (!AR.MSSA)
     report_fatal_error("LICM requires MemorySSA (loop-mssa)",
                        /*GenCrashDiag*/false);
@@ -415,6 +491,9 @@ bool LoopInvariantCodeMotion::runOnLoop(Loop *L, AAResults *AA, LoopInfo *LI,
   bool Changed = false;
 
   assert(L->isLCSSAForm(*DT) && "Loop is not in LCSSA form.");
+  //Self Note - LCSSA form = Loop-Closed SSA: all values defined inside the loop that are used
+  //outside must pass through a PHI node in an exit block. LICM requires this because
+  //it moves instructions across loop boundaries.
 
   // If this loop has metadata indicating that LICM is not to be performed then
   // just exit.
@@ -1199,7 +1278,8 @@ bool llvm::canSinkOrHoistInst(Instruction &I, AAResults *AA, DominatorTree *DT,
         return OptimizationRemarkMissed(
                    DEBUG_TYPE, "LoadWithLoopInvariantAddressInvalidated", LI)
                << "failed to move load with loop-invariant address "
-                  "because the loop may invalidate its value";
+                  "because the loop may invalidate its value"
+              << ore::NV("LoopNestLevel", getLoopNestLevel(CurLoop));
       });
 
     return !Invalidated;
@@ -1506,8 +1586,7 @@ static void eraseInstruction(Instruction &I, ICFLoopSafetyInfo &SafetyInfo,
 
 static void moveInstructionBefore(Instruction &I, BasicBlock::iterator Dest,
                                   ICFLoopSafetyInfo &SafetyInfo,
-                                  MemorySSAUpdater &MSSAU,
-                                  ScalarEvolution *SE) {
+                                  MemorySSAUpdater &MSSAU, ScalarEvolution *SE) {
   SafetyInfo.removeInstruction(&I);
   SafetyInfo.insertInstructionTo(&I, Dest->getParent());
   I.moveBefore(*Dest->getParent(), Dest);
@@ -1684,7 +1763,9 @@ static bool sink(Instruction &I, LoopInfo *LI, DominatorTree *DT,
 
   ORE->emit([&]() {
     return OptimizationRemark(DEBUG_TYPE, "InstSunk", &I)
-           << "sinking " << ore::NV("Inst", &I);
+           << "sinking " << ore::NV("Inst", &I)
+           << " from loop at nesting level " << ore::NV("LoopNestLevel", getLoopNestLevel(CurLoop))
+           << " in function " << ore::NV("Function", CurLoop->getHeader()->getParent()->getName());
   });
   if (isa<LoadInst>(I))
     ++NumMovedLoads;
@@ -1740,8 +1821,10 @@ static void hoist(Instruction &I, const DominatorTree *DT, const Loop *CurLoop,
   LLVM_DEBUG(dbgs() << "LICM hoisting to " << Dest->getNameOrAsOperand() << ": "
                     << I << "\n");
   ORE->emit([&]() {
-    return OptimizationRemark(DEBUG_TYPE, "Hoisted", &I) << "hoisting "
-                                                         << ore::NV("Inst", &I);
+    return OptimizationRemark(DEBUG_TYPE, "Hoisted", &I)
+           << "hoisting " << ore::NV("Inst", &I)
+           << " from loop at nesting level " << ore::NV("LoopNestLevel", getLoopNestLevel(CurLoop))
+           << " in function " << ore::NV("Function", CurLoop->getHeader()->getParent()->getName());
   });
 
   // Metadata can be dependent on conditions we are hoisting above.
@@ -1798,7 +1881,8 @@ static bool isSafeToExecuteUnconditionally(
         return OptimizationRemarkMissed(
                    DEBUG_TYPE, "LoadWithLoopInvariantAddressCondExecuted", LI)
                << "failed to hoist load with loop-invariant address "
-                  "because load is conditionally executed";
+                  "because load is conditionally executed"
+           << ore::NV("LoopNestLevel", getLoopNestLevel(CurLoop));
       });
   }
 
@@ -2826,3 +2910,4 @@ static bool inSubLoop(BasicBlock *BB, Loop *CurLoop, LoopInfo *LI) {
   assert(CurLoop->contains(BB) && "Only valid if BB is IN the loop");
   return LI->getLoopFor(BB) != CurLoop;
 }
+
