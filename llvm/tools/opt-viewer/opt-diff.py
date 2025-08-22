@@ -21,6 +21,24 @@ import optrecord
 import argparse
 from collections import defaultdict
 
+def get_remark_key(r):
+    """
+    Create a hashable key from a remark object based on its content.
+    """
+    # Convert the Args list of tuples to a hashable tuple.
+    # Use `r.Args or []` to handle cases where Args might be None.
+    frozen_args = tuple(r.Args or [])
+
+    # The traceback shows that r.DebugLoc is a dictionary, not an object.
+    # Access elements using dictionary keys. Use .get() for safety.
+    loc = (None, None, None)
+    if r.DebugLoc:
+        loc = (r.DebugLoc.get('File'),
+               r.DebugLoc.get('Line'),
+               r.DebugLoc.get('Column'))
+
+    return (r.Pass, r.Name, r.Function, loc, frozen_args)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=desc)
     parser.add_argument(
@@ -64,18 +82,31 @@ if __name__ == "__main__":
     all_remarks1, _, _ = optrecord.gather_results(files1, args.jobs, print_progress)
     all_remarks2, _, _ = optrecord.gather_results(files2, args.jobs, print_progress)
 
-    added = set(all_remarks2.values()) - set(all_remarks1.values())
-    removed = set(all_remarks1.values()) - set(all_remarks2.values())
+    # Create dictionaries mapping the content-based key to each remark object.
+    remarks1_map = {get_remark_key(r): r for r in all_remarks1.values()}
+    remarks2_map = {get_remark_key(r): r for r in all_remarks2.values()}
+
+    # Use the keys to find the added and removed remarks.
+    added_keys = set(remarks2_map.keys()) - set(remarks1_map.keys())
+    removed_keys = set(remarks1_map.keys()) - set(remarks2_map.keys())
+
+    added = [remarks2_map[key] for key in added_keys]
+    removed = [remarks1_map[key] for key in removed_keys]
 
     for r in added:
         r.Added = True
     for r in removed:
         r.Added = False
 
-    result = list(added | removed)
+    result = list(added) + list(removed)
     for r in result:
         r.recover_yaml_structure()
 
-    for i in range(0, len(result), args.max_size):
-        with open(args.output.format(i / args.max_size), "w") as stream:
-            yaml.dump_all(result[i : i + args.max_size], stream)
+    # for i in range(0, len(result), args.max_size):
+    #     output_filename = args.output.format("" if i == 0 else i // args.max_size)
+    #     with open(output_filename, "w") as stream:
+    #         yaml.dump_all(result[i : i + args.max_size], stream)
+
+    output_filename = args.output
+    with open(output_filename, "w") as stream:
+        yaml.dump_all(result, stream)
