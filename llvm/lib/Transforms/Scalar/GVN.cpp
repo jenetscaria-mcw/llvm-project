@@ -95,6 +95,7 @@ using namespace PatternMatch;
 
 
 #define GVNPASSFILE "/mnt/Data/Jenet/new-clone/llvm-project/GVN_extract_passed.txt"
+#define GVNBLOCKFILE "/mnt/Data/Jenet/new-clone/llvm-project/GVN_extract_blocked.txt"
 
 enum GVNMode {
   GVN_All,        // default
@@ -835,6 +836,7 @@ PreservedAnalyses GVNPass::run(Function &F, FunctionAnalysisManager &AM) {
   // be less effective! We should fix memdep and basic-aa to not exhibit this
   // behavior, but until then don't change the order here.
   static std::unordered_set<std::string> Allowlist;
+  static std::unordered_set<std::string> Blocklist;
   static std::once_flag LoadFlag;
   std::call_once(LoadFlag, []() {
     std::ifstream infile(GVNPASSFILE);
@@ -854,7 +856,25 @@ PreservedAnalyses GVNPass::run(Function &F, FunctionAnalysisManager &AM) {
       Allowlist.insert(FuncName);
     }
 
+    std::ifstream blockfile(GVNBLOCKFILE);
+    std::string blockline;
+    while (std::getline(blockfile, blockline)) {
+        std::istringstream iss(blockline);
+        std::string FuncName;
+        if (!(iss >> FuncName)) continue;
+
+        // only add to blocklist if not explicitly in allowlist
+        if (Allowlist.count(FuncName) == 0) {
+            GVNConfigMap[FuncName] = GVN_Skip;
+            Blocklist.insert(FuncName);
+        }
+    }
   });
+
+  std::string FuncName = F.getName().str();
+  if (Blocklist.count(FuncName) > 0) {
+    return PreservedAnalyses::all();
+  }
 
   std::optional<std::string> Mode;
   auto It = GVNConfigMap.find(F.getName().str());
@@ -864,13 +884,9 @@ PreservedAnalyses GVNPass::run(Function &F, FunctionAnalysisManager &AM) {
       case GVN_LoadPRE:  Mode = "LoadPRE";  break;
       case GVN_All:      Mode = "All";      break;
     }
-    std::cout << "Running GVN mode " << *Mode << " for function: " << F.getName().str();
   }
 
   bool ForceGVN = Allowlist.count(F.getName().str()) > 0;
-  if (ForceGVN) std::cout << " [FORCED]" ;
-  std::cout << std::endl;
-
   auto &AC = AM.getResult<AssumptionAnalysis>(F);
   auto &DT = AM.getResult<DominatorTreeAnalysis>(F);
   auto &TLI = AM.getResult<TargetLibraryAnalysis>(F);
@@ -886,7 +902,6 @@ PreservedAnalyses GVNPass::run(Function &F, FunctionAnalysisManager &AM) {
   if (ForceGVN)
     Changed = true;
 
-  std::cout << "Changed: " << Changed << std::endl;
   if (!Changed)
     return PreservedAnalyses::all();
   PreservedAnalyses PA;
