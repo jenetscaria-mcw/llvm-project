@@ -94,8 +94,8 @@ using namespace PatternMatch;
 #define DEBUG_TYPE "gvn"
 
 
-#define GVNPASSFILE "/mnt/Data/Jenet/new-clone/llvm-project/GVN_extract_passed.txt"
-#define GVNBLOCKFILE "/mnt/Data/Jenet/new-clone/llvm-project/GVN_extract_blocked.txt"
+#define GVNPASSFILE "/mnt/Data/Jenet/test_clone/llvm-project/GVN_extract_passed.txt"
+#define GVNBLOCKFILE "/mnt/Data/Jenet/test_clone/llvm-project/GVN_extract_blocked.txt"
 
 enum GVNMode {
   GVN_All,        // default
@@ -103,6 +103,10 @@ enum GVNMode {
   GVN_LoadPRE
 };
 std::unordered_map<std::string, GVNMode> GVNConfigMap;
+
+// Global flag to indicate we should only perform Load PRE (no full redundancy
+// elimination of non-local loads). Set in runImpl() per-function.
+static thread_local bool GVNLoadPREOnly = false;
 
 STATISTIC(NumGVNInstr, "Number of instructions deleted");
 STATISTIC(NumGVNLoad, "Number of loads deleted");
@@ -865,7 +869,6 @@ PreservedAnalyses GVNPass::run(Function &F, FunctionAnalysisManager &AM) {
 
         // only add to blocklist if not explicitly in allowlist
         if (Allowlist.count(FuncName) == 0) {
-            GVNConfigMap[FuncName] = GVN_Skip;
             Blocklist.insert(FuncName);
         }
     }
@@ -898,9 +901,7 @@ PreservedAnalyses GVNPass::run(Function &F, FunctionAnalysisManager &AM) {
   auto &ORE = AM.getResult<OptimizationRemarkEmitterAnalysis>(F);
   bool Changed = runImpl(F, AC, DT, TLI, AA, MemDep, LI, &ORE,
                          MSSA ? &MSSA->getMSSA() : nullptr, Mode);
-  // If the function is in the allowlist, pretend GVN always made a change
-  if (ForceGVN)
-    Changed = true;
+
 
   if (!Changed)
     return PreservedAnalyses::all();
@@ -1973,6 +1974,9 @@ static void reportLoadElim(LoadInst *Load, Value *AvailableValue,
 /// Attempt to eliminate a load whose dependencies are
 /// non-local by performing PHI construction.
 bool GVNPass::processNonLocalLoad(LoadInst *Load) {
+  // MemDep is required for non-local load processing and PRE of loads.
+  if (!MD)
+    return false;
   // non-local speculations are not allowed under asan.
   if (Load->getParent()->getParent()->hasFnAttribute(
           Attribute::SanitizeAddress) ||
@@ -2019,12 +2023,17 @@ bool GVNPass::processNonLocalLoad(LoadInst *Load) {
   if (ValuesPerBlock.empty())
     return Changed;
 
-  // Step 3: Eliminate fully redundancy.
+  // Step 3: Eliminate full redundancy (disabled when Mode == "LoadPRE").
   //
   // If all of the instructions we depend on produce a known value for this
   // load, then it is fully redundant and we can use PHI insertion to compute
   // its value.  Insert PHIs and remove the fully redundant value now.
   if (UnavailableBlocks.empty()) {
+    // If the current run mode is dedicated LoadPRE, skip full redundancy
+    // elimination and allow only PRE below.
+    if (GVNLoadPREOnly)
+      ;
+    else {
     LLVM_DEBUG(dbgs() << "GVN REMOVING NONLOCAL LOAD: " << *Load << '\n');
 
     // Perform PHI construction.
@@ -2047,9 +2056,10 @@ bool GVNPass::processNonLocalLoad(LoadInst *Load) {
     ++NumGVNLoad;
     reportLoadElim(Load, V, ORE);
     return true;
+    }
   }
 
-  // Step 4: Eliminate partial redundancy.
+  // Step 4: Eliminate partial redundancy (Load PRE).
   if (!isPREEnabled() || !isLoadPREEnabled())
     return Changed;
   if (!isLoadInLoopPREEnabled() && LI->getLoopFor(Load->getParent()))
@@ -2833,7 +2843,6 @@ bool GVNPass::runImpl(Function &F, AssumptionCache &RunAC, DominatorTree &RunDT,
                       MemoryDependenceResults *RunMD, LoopInfo &LI,
                       OptimizationRemarkEmitter *RunORE, MemorySSA *MSSA,
                       std::optional<std::string> Mode) {
-  // std::cout << "Running GVN Impl on function: " << F.getName().str()<<std::endl;
   AC = &RunAC;
   DT = &RunDT;
   VN.setDomTree(DT);
@@ -2865,7 +2874,9 @@ bool GVNPass::runImpl(Function &F, AssumptionCache &RunAC, DominatorTree &RunDT,
   DTU.flush();
 
   if (!Mode.has_value() || Mode.value() == std::string("LoadElim") ||
-      Mode.value() == std::string("All")) {
+      Mode.value() == std::string("All") ||
+      Mode.value() == std::string("LoadPRE")) {
+    GVNLoadPREOnly = (Mode.has_value() && Mode.value() == std::string("LoadPRE"));
     unsigned Iteration = 0;
     while (ShouldContinue) {
       LLVM_DEBUG(dbgs() << "GVN iteration: " << Iteration << "\n");
@@ -2874,6 +2885,7 @@ bool GVNPass::runImpl(Function &F, AssumptionCache &RunAC, DominatorTree &RunDT,
       Changed |= ShouldContinue;
       ++Iteration;
     }
+    GVNLoadPREOnly = false;
   }
 
   if (isPREEnabled() && (!Mode.has_value() || Mode.value() == "LoadPRE"
