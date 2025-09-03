@@ -21,24 +21,6 @@ import optrecord
 import argparse
 from collections import defaultdict
 
-def get_remark_key(r):
-    """
-    Create a hashable key from a remark object based on its content.
-    """
-    # Convert the Args list of tuples to a hashable tuple.
-    # Use `r.Args or []` to handle cases where Args might be None.
-    frozen_args = tuple(r.Args or [])
-
-    # The traceback shows that r.DebugLoc is a dictionary, not an object.
-    # Access elements using dictionary keys. Use .get() for safety.
-    loc = (None, None, None)
-    if r.DebugLoc:
-        loc = (r.DebugLoc.get('File'),
-               r.DebugLoc.get('Line'),
-               r.DebugLoc.get('Column'))
-
-    return (r.Pass, r.Name, r.Function, loc, frozen_args)
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=desc)
     parser.add_argument(
@@ -82,16 +64,12 @@ if __name__ == "__main__":
     all_remarks1, _, _ = optrecord.gather_results(files1, args.jobs, print_progress)
     all_remarks2, _, _ = optrecord.gather_results(files2, args.jobs, print_progress)
 
-    # Create dictionaries mapping the content-based key to each remark object.
-    remarks1_map = {get_remark_key(r): r for r in all_remarks1.values()}
-    remarks2_map = {get_remark_key(r): r for r in all_remarks2.values()}
-
     # Use the keys to find the added and removed remarks.
-    added_keys = set(remarks2_map.keys()) - set(remarks1_map.keys())
-    removed_keys = set(remarks1_map.keys()) - set(remarks2_map.keys())
+    added_keys = set(all_remarks1.keys()) - set(all_remarks2.keys())
+    removed_keys = set(all_remarks2.keys()) - set(all_remarks1.keys())
 
-    added = [remarks2_map[key] for key in added_keys]
-    removed = [remarks1_map[key] for key in removed_keys]
+    added = [all_remarks1[key] for key in added_keys]
+    removed = [all_remarks2[key] for key in removed_keys]
 
     for r in added:
         r.Added = True
