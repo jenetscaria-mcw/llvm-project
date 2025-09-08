@@ -1031,7 +1031,7 @@ void DecoderEmitter::emitDecoderFunction(formatted_raw_ostream &OS,
   // The decoder function is just a big switch statement based on the
   // input decoder index.
   OS.indent(Indentation) << "template <typename InsnType>\n";
-  OS.indent(Indentation) << "static DecodeStatus decodeToMCInst(DecodeStatus S,"
+  OS.indent(Indentation) << "static __attribute__((flatten)) DecodeStatus decodeToMCInst(DecodeStatus S,"
                          << " unsigned Idx, InsnType insn, MCInst &MI,\n";
   OS.indent(Indentation)
       << "                                   uint64_t "

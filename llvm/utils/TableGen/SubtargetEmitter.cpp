@@ -1764,7 +1764,7 @@ void SubtargetEmitter::emitSchedModelHelpersImpl(
 
 void SubtargetEmitter::EmitSchedModelHelpers(const std::string &ClassName,
                                              raw_ostream &OS) {
-  OS << "unsigned " << ClassName
+  OS << "__attribute__((flatten)) unsigned " << ClassName
      << "\n::resolveSchedClass(unsigned SchedClass, const MachineInstr *MI,"
      << " const TargetSchedModel *SchedModel) const {\n";
 
@@ -2081,7 +2081,7 @@ void SubtargetEmitter::run(raw_ostream &OS) {
      << "  explicit " << ClassName << "(const Triple &TT, StringRef CPU, "
      << "StringRef TuneCPU, StringRef FS);\n"
      << "public:\n"
-     << "  unsigned resolveSchedClass(unsigned SchedClass, "
+     << "  __attribute__((flatten)) unsigned resolveSchedClass(unsigned SchedClass, "
      << " const MachineInstr *DefMI,"
      << " const TargetSchedModel *SchedModel) const override;\n"
      << "  unsigned resolveVariantSchedClass(unsigned SchedClass,"
