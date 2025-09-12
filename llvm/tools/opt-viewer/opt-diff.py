@@ -149,7 +149,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max-size",
         "-m",
-        default=10000,
+        default=100000,
         type=int,
         help="Maximum number of remarks stored in an output file",
     )

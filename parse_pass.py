@@ -68,11 +68,11 @@ def print_sections(file_path, pass_name, fp_pass, fp_miss):
             if not callee_match or not caller_match:
                 return None
 
-            if f"!Passed" not in full_remark_text:
+            if f"!Passed" in full_remark_text:
                 fp_pass.write(f"{callee_match.group(1)}\t{caller_match.group(1)}\n")
                 pass_count += 1
 
-            if f"!Missed" not in full_remark_text:
+            if f"!Missed" in full_remark_text:
                 fp_miss.write(f"{callee_match.group(1)}\t{caller_match.group(1)}\n")
                 miss_count += 1
             
