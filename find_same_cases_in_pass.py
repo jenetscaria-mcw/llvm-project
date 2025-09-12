@@ -27,7 +27,11 @@ def extract_caller_callee_info(entry, pass_name):
     if pass_name not in pass_name_entry:
         return None
     #print (pass_name_entry, pass_name)
-
+    
+    added_entry = entry.get("Added", "Unknown")
+    if not added_entry:
+        return None
+    
     tag = entry.get("__tag__", "Unknown")
     callee = None
     caller = None
@@ -61,10 +65,11 @@ def group_by_callee_with_callers(entries, pass_name):
     
     return grouped
 
-def main(filename, pass_name, func_count):
+def main(filename, pass_name, func_count, fp_pass, fp_miss):
     entries = load_yaml_entries(filename)
     grouped = group_by_callee_with_callers(entries, pass_name)
-    
+    pass_count = 0
+    miss_count = 0
     # Print results in key: {value1, value2} format
     for callee, caller_tag_pairs in grouped.items():
         values = [[caller,tag] for caller, tag in caller_tag_pairs]
@@ -73,10 +78,21 @@ def main(filename, pass_name, func_count):
             output[value[0]].append(value[1])
         for key,value in output.items():
             if (len(set(value)) != 1):
+                # mixed case
+                print (f"Mised case\t{callee}\t{key}")
                 func_count[0] += 1
             else:
+                # Same case
                 func_count[1] += 1
-    print (func_count)
+                if value[0] == 'Passed':
+                    print (f"Passed\t{callee}\t{key}")
+                    fp_pass.write(f"{callee}\t{key}\n")
+                    pass_count += 1
+                elif value[0] == 'Missed':
+                    print (f"Missed\t{callee}\t{key}")
+                    fp_miss.write(f"{callee}\t{key}\n")
+                    miss_count += 1
+    print (func_count, pass_count, miss_count)
 
 def find_opt_files(dirs_or_files):
     all = glob.iglob(os.path.join(dirs_or_files, "**", "*.opt.yaml"), recursive=True)
@@ -84,15 +100,22 @@ def find_opt_files(dirs_or_files):
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
-        print("Usage: python3 group_by_callee.py <yaml_dir> <pass_name>")
+        print("Usage: python3 find_same_cases_in_pass.py <yaml_dir> <pass_name>")
         sys.exit(1)
     yaml_dir = sys.argv[1]
     pass_name = sys.argv[2]
+
+    fp_pass = open(pass_name + ".txt", "a")
+    fp_miss = open("no_"+ pass_name +".txt", "a")
+
     all = find_opt_files(yaml_dir)
     func_count = [0, 0]
 
     for i,filename in enumerate(all):
         print (f"Processing {i} : {filename}")
-        main(filename, pass_name, func_count)
+        main(filename, pass_name, func_count, fp_pass, fp_miss)
 
     print (func_count)
+
+    fp_pass.close()
+    fp_miss.close()

@@ -93,8 +93,8 @@ def find_opt_files(dirs_or_files):
 def run_opt_files(dirs_or_files, pass_name):
     all_files = find_opt_files(dirs_or_files)
     print (all_files)
-    fp_pass = open("inline.txt", "a")
-    fp_miss = open("no_inline.txt", "a")
+    fp_pass = open(pass_name + ".txt", "a")
+    fp_miss = open("no_"+ pass_name +".txt", "a")
     
     count = 0
     for file_name in all_files:
@@ -107,7 +107,7 @@ def run_opt_files(dirs_or_files, pass_name):
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
-        print("Usage: python script_name.py <remark_yaml_file> <pass_name>")
+        print("Usage: python parse_pass.py <yaml_dir> <pass_name>")
         sys.exit(1)
 
     run_opt_files(sys.argv[1], sys.argv[2])
