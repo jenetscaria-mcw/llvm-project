@@ -25,6 +25,11 @@ def extract_thresholds_from_file(yaml_file):
                     continue
                 if doc.get("Pass") != "inline":
                     continue
+
+                # Only consider entries with Added: true
+                if not doc.get("Added", False):
+                    continue
+
                 args = doc.get("Args", [])
                 for arg in args:
                     if isinstance(arg, dict) and "Threshold" in arg:
@@ -50,7 +55,7 @@ def collect_thresholds_from_dir(root_dir, workers=None):
         return [], []
 
     if workers is None:
-        workers = max(1, cpu_count() - 1)  # leave 1 CPU free
+        workers = max(1, cpu_count() - 1)
 
     with Pool(processes=workers) as pool:
         results = pool.map(extract_thresholds_from_file, yaml_files)
@@ -70,11 +75,11 @@ if __name__ == "__main__":
     yaml_dir = sys.argv[1]
     passed, missed = collect_thresholds_from_dir(yaml_dir)
 
-    print(f"Total Passed thresholds collected: {len(passed)}")
-    print(f"Total Missed thresholds collected: {len(missed)}")
+    print(f"Total Passed thresholds (Added: true): {len(passed)}")
+    print(f"Total Missed thresholds (Added: true): {len(missed)}")
 
     if passed:
         avg_passed = mean(passed)
         print(f"Overall Average Passed threshold: {avg_passed:.2f}")
     else:
-        print("No Passed thresholds found.")
+        print("No Passed thresholds found with Added: true.")
