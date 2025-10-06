@@ -28,6 +28,10 @@ def extract_caller_callee_info(entry, pass_name):
         return None
     #print (pass_name_entry, pass_name)
 
+    added_entry = entry.get("Added", "Unknown")
+    if not added_entry:
+        return None
+
     tag = entry.get("__tag__", "Unknown")
     callee = None
     caller = None
@@ -72,6 +76,9 @@ def main(filename, pass_name, func_count):
         for value in values:
             output[value[0]].append(value[1])
         for key,value in output.items():
+            if "Analysis" in set(value):
+                print ("It considers. Modify the logic")
+                exit(0)
             if (len(set(value)) != 1):
                 func_count[0] += 1
             else:

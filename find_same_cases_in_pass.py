@@ -77,21 +77,26 @@ def main(filename, pass_name, func_count, fp_pass, fp_miss):
         for value in values:
             output[value[0]].append(value[1])
         for key,value in output.items():
+            if "Analysis" in set(value):
+                print ("It considers. Modify the logic")
+                exit(0)
             if (len(set(value)) != 1):
                 # mixed case
-                print (f"Mised case\t{callee}\t{key}")
+                #print (f"Mised case\t{callee}\t{key}")
                 func_count[0] += 1
             else:
                 # Same case
                 func_count[1] += 1
                 if value[0] == 'Passed':
-                    print (f"Passed\t{callee}\t{key}")
+                    #print (f"Passed\t{callee}\t{key}")
                     fp_pass.write(f"{callee}\t{key}\n")
                     pass_count += 1
                 elif value[0] == 'Missed':
-                    print (f"Missed\t{callee}\t{key}")
+                    #print (f"Missed\t{callee}\t{key}")
                     fp_miss.write(f"{callee}\t{key}\n")
                     miss_count += 1
+                else:
+                    print (value[0])
     print (func_count, pass_count, miss_count)
 
 def find_opt_files(dirs_or_files):
