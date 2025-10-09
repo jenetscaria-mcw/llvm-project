@@ -4542,6 +4542,10 @@ static void handleMinSizeAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
     D->addAttr(MinSize);
 }
 
+static void handleAdaptiveAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
+  D->addAttr(::new (S.Context) AdaptiveAttr(S.Context, AL));
+}
+
 static void handleOptimizeNoneAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
   if (OptimizeNoneAttr *Optnone = S.mergeOptimizeNoneAttr(D, AL))
     D->addAttr(Optnone);
@@ -6507,6 +6511,9 @@ ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D, const ParsedAttr &AL,
     break;
   case ParsedAttr::AT_MinSize:
     handleMinSizeAttr(S, D, AL);
+    break;
+  case ParsedAttr::AT_Adaptive:
+    handleAdaptiveAttr(S, D, AL);
     break;
   case ParsedAttr::AT_OptimizeNone:
     handleOptimizeNoneAttr(S, D, AL);

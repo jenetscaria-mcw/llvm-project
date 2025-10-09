@@ -4719,3 +4719,9 @@ def ClspvLibclcBuiltin: InheritableAttr {
   let Documentation = [ClspvLibclcBuiltinDoc];
   let SimpleHandler = 1;
 }
+
+def Adaptive : InheritableAttr {
+  let Spellings = [GNU<"adaptive">];
+  let Subjects = SubjectList<[Function, CXXMethod, ObjCMethod, ParmVar, Var], ErrorDiag>;
+  let Documentation = [Undocumented];
+}
