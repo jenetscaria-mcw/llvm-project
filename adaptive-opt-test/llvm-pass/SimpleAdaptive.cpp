@@ -78,24 +78,23 @@ public:
         }
         
         errs() << "Found function: " << MatrixFunc->getName() << "\n";
-        //errs() << typeid(MatrixFunc->getName()).name() << "\n";
         StringRef name = MatrixFunc->getName();
         errs() << name << "\n";
         std::string s = name.str();
         errs() << s << "\n";
+        
         Function* V0 = createBaselineVersion(MatrixFunc, 0, M);
         Function* V1 = createOptimizedVersion(MatrixFunc, 1, M);
         
-        // Create performance metrics structure
-        PerformanceMetrics metrics;
-        metrics.setFunctions(V0, V1);
+        // Create global performance metrics structure
+        GlobalVariable* GlobalMetrics = createGlobalMetrics(V0, V1, M);
         
-        Function* Dispatcher = createDispatcher(MatrixFunc, V0, V1, M);
+        Function* Dispatcher = createDispatcher(MatrixFunc, V0, V1, GlobalMetrics, M);
         
         Function* Wrapper = createWrapper(MatrixFunc, Dispatcher, M);
         
         // Create performance summary function
-        Function* SummaryFunc = createPerformanceSummary(MatrixFunc, M);
+        Function* SummaryFunc = createPerformanceSummary(MatrixFunc, GlobalMetrics, M);
         
         MatrixFunc->replaceAllUsesWith(Wrapper);
         Wrapper->takeName(MatrixFunc);
@@ -128,7 +127,63 @@ private:
         return NewF;
     }
     
-    Function* createDispatcher(Function* Original, Function* V0, Function* V1, Module& M) {
+    // Create global PerformanceMetrics structure
+    GlobalVariable* createGlobalMetrics(Function* V0, Function* V1, Module& M) {
+        LLVMContext &Ctx = M.getContext();
+        
+        // Create a constant struct initializer for PerformanceMetrics
+        StructType* MetricsType = createMetricsStructType(Ctx);
+        
+        // Initialize with zeros and function pointers
+        Constant* Zero32 = ConstantInt::get(Type::getInt32Ty(Ctx), 0);
+        Constant* Zero64 = ConstantInt::get(Type::getInt64Ty(Ctx), 0);
+        Constant* ZeroDouble = ConstantFP::get(Type::getDoubleTy(Ctx), 0.0);
+        
+        std::vector<Constant*> Elements = {
+            Zero32,     // call_count_v0
+            Zero32,     // call_count_v1
+            ConstantExpr::getBitCast(V0, Type::getInt8Ty(Ctx)),  // func_v0
+            ConstantExpr::getBitCast(V1, Type::getInt8Ty(Ctx)),  // func_v1
+            Zero64,     // total_cycles_v0
+            Zero64,     // total_cycles_v1
+            ConstantExpr::getBitCast(V0, Type::getInt8Ty(Ctx)),  // best_version (default to V0)
+            ZeroDouble, // avg_cycles_v0
+            ZeroDouble  // avg_cycles_v1
+        };
+        
+        Constant* Init = ConstantStruct::get(MetricsType, Elements);
+        
+        GlobalVariable* GlobalMetrics = new GlobalVariable(
+            M,
+            MetricsType,
+            false, // isConstant
+            GlobalValue::InternalLinkage,
+            Init,
+            "adaptive_metrics"
+        );
+        
+        return GlobalMetrics;
+    }
+    
+    // Create the struct type for PerformanceMetrics in LLVM IR
+    StructType* createMetricsStructType(LLVMContext &Ctx) {
+        std::vector<Type*> Elements = {
+            Type::getInt32Ty(Ctx),    // call_count_v0
+            Type::getInt32Ty(Ctx),    // call_count_v1
+            Type::getInt8Ty(Ctx),  // func_v0 (as void*)
+            Type::getInt8Ty(Ctx),  // func_v1 (as void*)
+            Type::getInt64Ty(Ctx),    // total_cycles_v0
+            Type::getInt64Ty(Ctx),    // total_cycles_v1
+            Type::getInt8Ty(Ctx),  // best_version (as void*)
+            Type::getDoubleTy(Ctx),   // avg_cycles_v0
+            Type::getDoubleTy(Ctx)    // avg_cycles_v1
+        };
+        
+        return StructType::create(Ctx, Elements, "PerformanceMetrics");
+    }
+    
+    Function* createDispatcher(Function* Original, Function* V0, Function* V1, 
+                              GlobalVariable* GlobalMetrics, Module& M) {
         LLVMContext &Ctx = M.getContext();
         
         Function* Dispatcher = Function::Create(
@@ -155,60 +210,25 @@ private:
                 false)
         );
         
-        // Global variables for performance tracking
-        GlobalVariable* CallCountV0 = new GlobalVariable(
-            M,
-            Type::getInt32Ty(Ctx),
-            false,
-            GlobalValue::InternalLinkage,
-            ConstantInt::get(Type::getInt32Ty(Ctx), 0),
-            "call_count_v0"
-        );
-        
-        GlobalVariable* CallCountV1 = new GlobalVariable(
-            M,
-            Type::getInt32Ty(Ctx),
-            false,
-            GlobalValue::InternalLinkage,
-            ConstantInt::get(Type::getInt32Ty(Ctx), 0),
-            "call_count_v1"
-        );
-        
-        GlobalVariable* TotalCyclesV0 = new GlobalVariable(
-            M,
-            Type::getInt64Ty(Ctx),
-            false,
-            GlobalValue::InternalLinkage,
-            ConstantInt::get(Type::getInt64Ty(Ctx), 0),
-            "total_cycles_v0"
-        );
-        
-        GlobalVariable* TotalCyclesV1 = new GlobalVariable(
-            M,
-            Type::getInt64Ty(Ctx),
-            false,
-            GlobalValue::InternalLinkage,
-            ConstantInt::get(Type::getInt64Ty(Ctx), 0),
-            "total_cycles_v1"
-        );
-        
-        GlobalVariable* BestVersion = new GlobalVariable(
-            M,
-            PointerType::get(Original->getFunctionType(), 0),
-            false,
-            GlobalValue::InternalLinkage,
-            ConstantPointerNull::get(PointerType::get(Original->getFunctionType(), 0)),
-            "best_version"
-        );
+        // Get the metrics struct type
+        StructType* MetricsType = createMetricsStructType(Ctx);
         
         BasicBlock* Entry = BasicBlock::Create(Ctx, "entry", Dispatcher);
         IRBuilder<> Builder(Entry);
         
-        // Load current call counts
-        Value* CountV0 = Builder.CreateLoad(Type::getInt32Ty(Ctx), CallCountV0);
-        Value* CountV1 = Builder.CreateLoad(Type::getInt32Ty(Ctx), CallCountV1);
-        Value* TotalV0 = Builder.CreateLoad(Type::getInt64Ty(Ctx), TotalCyclesV0);
-        Value* TotalV1 = Builder.CreateLoad(Type::getInt64Ty(Ctx), TotalCyclesV1);
+        // Load metrics from global struct
+        Value* MetricsPtr = Builder.CreateBitCast(GlobalMetrics, 
+            MetricsType->getPointerTo());
+        
+        // Load individual fields from the struct
+        Value* CountV0 = Builder.CreateLoad(Type::getInt32Ty(Ctx), 
+            Builder.CreateStructGEP(MetricsType, MetricsPtr, 0));
+        Value* CountV1 = Builder.CreateLoad(Type::getInt32Ty(Ctx), 
+            Builder.CreateStructGEP(MetricsType, MetricsPtr, 1));
+        Value* TotalV0 = Builder.CreateLoad(Type::getInt64Ty(Ctx), 
+            Builder.CreateStructGEP(MetricsType, MetricsPtr, 4));
+        Value* TotalV1 = Builder.CreateLoad(Type::getInt64Ty(Ctx), 
+            Builder.CreateStructGEP(MetricsType, MetricsPtr, 5));
         
         // Adaptive switching logic based on performance
         // If we have enough samples from both versions, use the better one
@@ -261,15 +281,44 @@ private:
         Builder.SetInsertPoint(VersionSelection);
         Builder.CreateCondBr(UseV1, CallV1, CallV0);
         
-        // V0 execution block
-        Builder.SetInsertPoint(CallV0);
+        // Helper function to update metrics in the struct
+        auto updateMetricsInStruct = [&](int version, Value* Cycles, 
+                                        Value* OldCount, Value* OldTotal,
+                                        IRBuilder<>& Builder) {
+            // Calculate new values
+            Value* NewCount = Builder.CreateAdd(OldCount, 
+                ConstantInt::get(Type::getInt32Ty(Ctx), 1));
+            Value* NewTotal = Builder.CreateAdd(OldTotal, Cycles);
+            
+            // Update count and total in struct
+            Builder.CreateStore(NewCount, 
+                Builder.CreateStructGEP(MetricsType, MetricsPtr, version));
+            Builder.CreateStore(NewTotal, 
+                Builder.CreateStructGEP(MetricsType, MetricsPtr, version + 4));
+            
+            // Calculate and update average
+            Value* NewCount_i64 = Builder.CreateZExt(NewCount, Type::getInt64Ty(Ctx));
+            Value* NewAvg = Builder.CreateUIToFP(
+                Builder.CreateUDiv(NewTotal, NewCount_i64), 
+                Type::getDoubleTy(Ctx)
+            );
+            Builder.CreateStore(NewAvg, 
+                Builder.CreateStructGEP(MetricsType, MetricsPtr, version + 7));
+            
+            return std::make_pair(NewCount, NewTotal);
+        };
+
+        // Prepare call arguments
         std::vector<Value*> Args;
         for (auto &Arg : Dispatcher->args()) {
             Args.push_back(&Arg);
         }
+
+        // V0 execution block
+        Builder.SetInsertPoint(CallV0);
         
         // Start timing
-        Value* StartTime = Builder.CreateCall(ChronoNow);
+        Value* StartTimeV0 = Builder.CreateCall(ChronoNow);
         
         // Log dispatch choice: V0
         Value* MsgV0 = Builder.CreateGlobalStringPtr("DISPATCH: V0 (Baseline) - ");
@@ -279,18 +328,15 @@ private:
         Builder.CreateCall(V0, Args);
         
         // End timing and calculate cycles
-        Value* EndTime = Builder.CreateCall(ChronoNow);
-        Value* Cycles = Builder.CreateSub(EndTime, StartTime);
+        Value* EndTimeV0 = Builder.CreateCall(ChronoNow);
+        Value* CyclesV0 = Builder.CreateSub(EndTimeV0, StartTimeV0);
         
-        // Update V0 metrics
-        Value* NewCountV0 = Builder.CreateAdd(CountV0, ConstantInt::get(Type::getInt32Ty(Ctx), 1));
-        Value* NewTotalV0 = Builder.CreateAdd(TotalV0, Cycles);
-        Builder.CreateStore(NewCountV0, CallCountV0);
-        Builder.CreateStore(NewTotalV0, TotalCyclesV0);
+        // Update V0 metrics in struct
+        auto [NewCountV0, NewTotalV0] = updateMetricsInStruct(0, CyclesV0, CountV0, TotalV0, Builder);
         
         // Log performance metrics
         Value* LogMsgV0 = Builder.CreateGlobalStringPtr("Cycles: %lld, Total: %lld, Count: %d\n");
-        Builder.CreateCall(Printf, {LogMsgV0, Cycles, NewTotalV0, NewCountV0});
+        Builder.CreateCall(Printf, {LogMsgV0, CyclesV0, NewTotalV0, NewCountV0});
         
         Builder.CreateBr(EndBlock);
         
@@ -298,7 +344,7 @@ private:
         Builder.SetInsertPoint(CallV1);
         
         // Start timing
-        StartTime = Builder.CreateCall(ChronoNow);
+        Value* StartTimeV1 = Builder.CreateCall(ChronoNow);
         
         // Log dispatch choice: V1
         Value* MsgV1 = Builder.CreateGlobalStringPtr("DISPATCH: V1 (Optimized) - ");
@@ -308,18 +354,15 @@ private:
         Builder.CreateCall(V1, Args);
         
         // End timing and calculate cycles
-        EndTime = Builder.CreateCall(ChronoNow);
-        Cycles = Builder.CreateSub(EndTime, StartTime);
+        Value* EndTimeV1 = Builder.CreateCall(ChronoNow);
+        Value* CyclesV1 = Builder.CreateSub(EndTimeV1, StartTimeV1);
         
-        // Update V1 metrics
-        Value* NewCountV1 = Builder.CreateAdd(CountV1, ConstantInt::get(Type::getInt32Ty(Ctx), 1));
-        Value* NewTotalV1 = Builder.CreateAdd(TotalV1, Cycles);
-        Builder.CreateStore(NewCountV1, CallCountV1);
-        Builder.CreateStore(NewTotalV1, TotalCyclesV1);
+        // Update V1 metrics in struct
+        auto [NewCountV1, NewTotalV1] = updateMetricsInStruct(1, CyclesV1, CountV1, TotalV1, Builder);
         
         // Log performance metrics
         Value* LogMsgV1 = Builder.CreateGlobalStringPtr("Cycles: %lld, Total: %lld, Count: %d\n");
-        Builder.CreateCall(Printf, {LogMsgV1, Cycles, NewTotalV1, NewCountV1});
+        Builder.CreateCall(Printf, {LogMsgV1, CyclesV1, NewTotalV1, NewCountV1});
         
         Builder.CreateBr(EndBlock);
         
@@ -354,7 +397,7 @@ private:
         return Wrapper;
     }
     
-    Function* createPerformanceSummary(Function* Original, Module& M) {
+    Function* createPerformanceSummary(Function* Original, GlobalVariable* GlobalMetrics, Module& M) {
         LLVMContext &Ctx = M.getContext();
         
         // Create a function that prints performance summary
@@ -381,60 +424,71 @@ private:
         if (SummaryFunc->empty()) {
             BasicBlock* Entry = BasicBlock::Create(Ctx, "entry", SummaryFunc);
             IRBuilder<> Builder(Entry);
-        
-        // Print header
-        Value* Header = Builder.CreateGlobalStringPtr("\n=== Performance Summary ===\n");
-        Builder.CreateCall(Printf, {Header});
-        
-        // Load counters and totals from globals
-        GlobalVariable* CallCountV0G = M.getGlobalVariable("call_count_v0", true);
-        GlobalVariable* CallCountV1G = M.getGlobalVariable("call_count_v1", true);
-        GlobalVariable* TotalCyclesV0G = M.getGlobalVariable("total_cycles_v0", true);
-        GlobalVariable* TotalCyclesV1G = M.getGlobalVariable("total_cycles_v1", true);
-
-        Value* CountV0 = Builder.CreateLoad(Type::getInt32Ty(Ctx), CallCountV0G);
-        Value* CountV1 = Builder.CreateLoad(Type::getInt32Ty(Ctx), CallCountV1G);
-        Value* TotalV0 = Builder.CreateLoad(Type::getInt64Ty(Ctx), TotalCyclesV0G);
-        Value* TotalV1 = Builder.CreateLoad(Type::getInt64Ty(Ctx), TotalCyclesV1G);
-
-        // Compute averages with zero-count guard
-        Value* ZeroI32 = ConstantInt::get(Type::getInt32Ty(Ctx), 0);
-        Value* HasV0 = Builder.CreateICmpUGT(CountV0, ZeroI32);
-        Value* HasV1 = Builder.CreateICmpUGT(CountV1, ZeroI32);
-        Value* CountV0_i64 = Builder.CreateZExt(CountV0, Type::getInt64Ty(Ctx));
-        Value* CountV1_i64 = Builder.CreateZExt(CountV1, Type::getInt64Ty(Ctx));
-        Value* AvgV0Raw = Builder.CreateUDiv(TotalV0, CountV0_i64);
-        Value* AvgV1Raw = Builder.CreateUDiv(TotalV1, CountV1_i64);
-        Value* ZeroI64 = ConstantInt::get(Type::getInt64Ty(Ctx), 0);
-        Value* AvgV0 = Builder.CreateSelect(HasV0, AvgV0Raw, ZeroI64);
-        Value* AvgV1 = Builder.CreateSelect(HasV1, AvgV1Raw, ZeroI64);
-
-        // Print V0 stats with averages
-        Value* V0Fmt = Builder.CreateGlobalStringPtr("V0 (Baseline): avg=%lld cycles (total=%lld, count=%d)\n");
-        Builder.CreateCall(Printf, {V0Fmt, AvgV0, TotalV0, CountV0});
-
-        // Print V1 stats with averages
-        Value* V1Fmt = Builder.CreateGlobalStringPtr("V1 (Optimized): avg=%lld cycles (total=%lld, count=%d)\n");
-        Builder.CreateCall(Printf, {V1Fmt, AvgV1, TotalV1, CountV1});
-
-        // Determine best version string
-        Value* HasBoth = Builder.CreateAnd(HasV0, HasV1);
-        Value* V1Better = Builder.CreateICmpULT(AvgV1, AvgV0);
-        Value* NameV1 = Builder.CreateGlobalStringPtr("V1 (Optimized)");
-        Value* NameV0 = Builder.CreateGlobalStringPtr("V0 (Baseline)");
-        Value* NameNA = Builder.CreateGlobalStringPtr("N/A");
-
-        // If both available choose by avg, else prefer the one that exists, else N/A
-        Value* BestWhenBoth = Builder.CreateSelect(V1Better, NameV1, NameV0);
-        Value* BestWhenAny = Builder.CreateSelect(HasV1, NameV1, Builder.CreateSelect(HasV0, NameV0, NameNA));
-        Value* BestName = Builder.CreateSelect(HasBoth, BestWhenBoth, BestWhenAny);
-
-        Value* BestLine = Builder.CreateGlobalStringPtr("Best Version: %s\n");
-        Builder.CreateCall(Printf, {BestLine, BestName});
-        
-        Value* Footer = Builder.CreateGlobalStringPtr("===========================\n");
-        Builder.CreateCall(Printf, {Footer});
-        
+            
+            // Print header
+            Value* Header = Builder.CreateGlobalStringPtr("\n=== Performance Summary ===\n");
+            Builder.CreateCall(Printf, {Header});
+            
+            // Get the metrics struct type
+            StructType* MetricsType = createMetricsStructType(Ctx);
+            
+            // Load metrics from global struct
+            Value* MetricsPtr = Builder.CreateBitCast(GlobalMetrics, 
+                MetricsType->getPointerTo());
+            
+            // Load individual fields from the struct
+            Value* CountV0 = Builder.CreateLoad(Type::getInt32Ty(Ctx), 
+                Builder.CreateStructGEP(MetricsType, MetricsPtr, 0));
+            Value* CountV1 = Builder.CreateLoad(Type::getInt32Ty(Ctx), 
+                Builder.CreateStructGEP(MetricsType, MetricsPtr, 1));
+            Value* TotalV0 = Builder.CreateLoad(Type::getInt64Ty(Ctx), 
+                Builder.CreateStructGEP(MetricsType, MetricsPtr, 4));
+            Value* TotalV1 = Builder.CreateLoad(Type::getInt64Ty(Ctx), 
+                Builder.CreateStructGEP(MetricsType, MetricsPtr, 5));
+            Value* AvgV0 = Builder.CreateLoad(Type::getDoubleTy(Ctx), 
+                Builder.CreateStructGEP(MetricsType, MetricsPtr, 7));
+            Value* AvgV1 = Builder.CreateLoad(Type::getDoubleTy(Ctx), 
+                Builder.CreateStructGEP(MetricsType, MetricsPtr, 8));
+            Value* BestVersionPtr = Builder.CreateLoad(Type::getInt8Ty(Ctx), 
+                Builder.CreateStructGEP(MetricsType, MetricsPtr, 6));
+            
+            // Convert double averages to int64 for printf compatibility
+            Value* AvgV0Int = Builder.CreateFPToUI(AvgV0, Type::getInt64Ty(Ctx));
+            Value* AvgV1Int = Builder.CreateFPToUI(AvgV1, Type::getInt64Ty(Ctx));
+            
+            // Print V0 stats with averages
+            Value* V0Fmt = Builder.CreateGlobalStringPtr("V0 (Baseline): avg=%lld cycles (total=%lld, count=%d)\n");
+            Builder.CreateCall(Printf, {V0Fmt, AvgV0Int, TotalV0, CountV0});
+            
+            // Print V1 stats with averages
+            Value* V1Fmt = Builder.CreateGlobalStringPtr("V1 (Optimized): avg=%lld cycles (total=%lld, count=%d)\n");
+            Builder.CreateCall(Printf, {V1Fmt, AvgV1Int, TotalV1, CountV1});
+            
+            // Determine best version
+            Value* HasV0 = Builder.CreateICmpUGT(CountV0, 
+                ConstantInt::get(Type::getInt32Ty(Ctx), 0));
+            Value* HasV1 = Builder.CreateICmpUGT(CountV1, 
+                ConstantInt::get(Type::getInt32Ty(Ctx), 0));
+            Value* HasBoth = Builder.CreateAnd(HasV0, HasV1);
+            
+            // Check if V1 is better based on stored averages
+            Value* V1Better = Builder.CreateFCmpULT(AvgV1, AvgV0);
+            Value* NameV1 = Builder.CreateGlobalStringPtr("V1 (Optimized)");
+            Value* NameV0 = Builder.CreateGlobalStringPtr("V0 (Baseline)");
+            Value* NameNA = Builder.CreateGlobalStringPtr("N/A");
+            
+            // If both available choose by avg, else prefer the one that exists, else N/A
+            Value* BestWhenBoth = Builder.CreateSelect(V1Better, NameV1, NameV0);
+            Value* BestWhenAny = Builder.CreateSelect(HasV1, NameV1, 
+                Builder.CreateSelect(HasV0, NameV0, NameNA));
+            Value* BestName = Builder.CreateSelect(HasBoth, BestWhenBoth, BestWhenAny);
+            
+            Value* BestLine = Builder.CreateGlobalStringPtr("Best Version: %s\n");
+            Builder.CreateCall(Printf, {BestLine, BestName});
+            
+            Value* Footer = Builder.CreateGlobalStringPtr("===========================\n");
+            Builder.CreateCall(Printf, {Footer});
+            
             Builder.CreateRetVoid();
             errs() << "  Created performance summary function\n";
         } else {
