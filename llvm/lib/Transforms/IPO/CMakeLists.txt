@@ -6,6 +6,7 @@ add_llvm_component_library(LLVMipo
   AttributorAttributes.cpp
   BarrierNoopPass.cpp
   BlockExtractor.cpp
+  SimpleAdaptive.cpp
   CalledValuePropagation.cpp
   ConstantMerge.cpp
   CrossDSOCFI.cpp
