@@ -1230,7 +1230,7 @@ public:
 
   static bool classofKind(Kind K) { return true; }
   static DeclContext *castToDeclContext(const Decl *);
-  static Decl *castFromDeclContext(const DeclContext *);
+  __attribute__((adaptive)) static Decl *castFromDeclContext(const DeclContext *);
 
   void print(raw_ostream &Out, unsigned Indentation = 0,
              bool PrintInstantiation = false) const;
