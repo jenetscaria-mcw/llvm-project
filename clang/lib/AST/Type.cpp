@@ -4057,7 +4057,7 @@ TagType::TagType(TypeClass TC, const TagDecl *D, QualType can)
                                 : TypeDependence::None),
       decl(const_cast<TagDecl *>(D)) {}
 
-static TagDecl *getInterestingTagDecl(TagDecl *decl) {
+__attribute__((adaptive)) static TagDecl *getInterestingTagDecl(TagDecl *decl) {
   for (auto *I : decl->redecls()) {
     if (I->isCompleteDefinition() || I->isBeingDefined())
       return I;

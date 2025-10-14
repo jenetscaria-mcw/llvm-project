@@ -505,7 +505,7 @@ bool Decl::isFlexibleArrayMemberLike(
   return ++FI == FD->getParent()->field_end();
 }
 
-TranslationUnitDecl *Decl::getTranslationUnitDecl() {
+__attribute__((adaptive)) TranslationUnitDecl *Decl::getTranslationUnitDecl() {
   if (auto *TUD = dyn_cast<TranslationUnitDecl>(this))
     return TUD;
 

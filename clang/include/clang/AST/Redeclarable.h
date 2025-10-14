@@ -119,7 +119,7 @@ protected:
              Link.get<NotKnownLatest>().template is<UninitializedLatest>();
     }
 
-    decl_type *getPrevious(const decl_type *D) const {
+    __attribute__((adaptive)) decl_type *getPrevious(const decl_type *D) const {
       if (Link.is<NotKnownLatest>()) {
         NotKnownLatest NKL = Link.get<NotKnownLatest>();
         if (NKL.is<Previous>())
