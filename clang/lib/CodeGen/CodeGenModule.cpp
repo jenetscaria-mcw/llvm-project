@@ -2417,7 +2417,7 @@ CodeGenModule::getMostBaseClasses(const CXXRecordDecl *RD) {
 void CodeGenModule::SetLLVMFunctionAttributesForDefinition(const Decl *D,
                                                            llvm::Function *F) {
   llvm::AttrBuilder B(F->getContext());
-
+    
   if ((!D || !D->hasAttr<NoUwtableAttr>()) && CodeGenOpts.UnwindTables)
     B.addUWTableAttr(llvm::UWTableKind(CodeGenOpts.UnwindTables));
 
@@ -2591,6 +2591,11 @@ void CodeGenModule::SetLLVMFunctionAttributesForDefinition(const Decl *D,
           CreateMetadataIdentifierForType(Context.getMemberPointerType(
               MD->getType(), Context.getRecordType(Base).getTypePtr()));
       F->addTypeMetadata(0, Id);
+    }
+  }
+  if (const auto *FD = dyn_cast<FunctionDecl>(D)) {
+    if (FD->hasAttr<AdaptiveAttr>()) {
+      F->addFnAttr(llvm::Attribute::get(F->getContext(), "adaptive"));
     }
   }
 }
