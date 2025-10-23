@@ -6,6 +6,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Support/raw_ostream.h"
+#include <vector>
 
 using namespace llvm;
 
@@ -20,44 +21,41 @@ namespace llvm {
   static Function* createWrapper(Function* Original, Function* Dispatcher, Module& M);
 
 PreservedAnalyses SimpleAdaptivePass::run(Module &M, ModuleAnalysisManager &) {
-    errs() << "=== SimpleAdaptive Pass Running ===\n";
+    // errs() << "=== SimpleAdaptive Pass Running ===\n";
     
-    // Find the target function
-    Function* AdaptiveFunc = nullptr;
-    
+    std::vector<Function*> adaptiveFunctions;
     for (Function &F : M) {
         if (!F.isDeclaration() && F.hasFnAttribute("adaptive")) {
-            errs() << "[ADAPTIVE] Found annotated function: "
-                   << F.getName() << "\n";
-            AdaptiveFunc = &F;
-            break;
+            // errs() << "[ADAPTIVE] Found: " << F.getName() << "\n";
+            adaptiveFunctions.push_back(&F);
         }
     }
     
-    if (!AdaptiveFunc) {
-        errs() << "Target function not found!\n";
+    if (adaptiveFunctions.empty()) {
+        // errs() << "No adaptive functions found!\n";
         return PreservedAnalyses::all();
     }
-    
-    errs() << "Found function: " << AdaptiveFunc->getName() << "\n";
-    StringRef name = AdaptiveFunc->getName();
-    std::string s = name.str();
+    // errs() << "Found function: " << AdaptiveFunc->getName() << "\n";
+    for (Function* F : adaptiveFunctions) {
+        StringRef name = F->getName();
+        std::string s = name.str();
 
-    Function* V0 = createBaselineVersion(AdaptiveFunc, 0, M);
-    Function* V1 = createOptimizedVersion(AdaptiveFunc, 1, M);
+        Function* V0 = createBaselineVersion(F, 0, M);
+        Function* V1 = createOptimizedVersion(F, 1, M);
 
-    addPrintToVersion(V0, 0, M);
-    addPrintToVersion(V1, 1, M);
+        addPrintToVersion(V0, 0, M);
+        addPrintToVersion(V1, 1, M);
+
+        Function* Dispatcher = createDispatcherWithDebug(F, V0, V1, M);
+        Function* Wrapper = createWrapper(F, Dispatcher, M);
+
+        F->replaceAllUsesWith(Wrapper);
+        Wrapper->takeName(F);
+        F->setName(s + "_original");
+        F->setLinkage(GlobalValue::InternalLinkage);
+    }
     
-    Function* Dispatcher = createDispatcherWithDebug(AdaptiveFunc, V0, V1, M);
-    Function* Wrapper = createWrapper(AdaptiveFunc, Dispatcher, M);
-    
-    AdaptiveFunc->replaceAllUsesWith(Wrapper);
-    Wrapper->takeName(AdaptiveFunc);
-    AdaptiveFunc->setName(s + "_original");
-    AdaptiveFunc->setLinkage(GlobalValue::InternalLinkage);
-    
-    errs() << "=== Transformation Complete ===\n";
+    // errs() << "=== Transformation Complete ===\n";
     return PreservedAnalyses::none();
 }
 
@@ -192,7 +190,7 @@ static Function* createWrapper(Function* Original, Function* Dispatcher, Module&
     Builder.CreateCall(Dispatcher, Args);
     Builder.CreateRetVoid();
     
-    errs() << "  Created wrapper\n";
+    // errs() << "  Created wrapper\n";
     return Wrapper;
 }
 
