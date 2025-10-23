@@ -1039,7 +1039,7 @@ const AttrVec &Decl::getAttrs() const {
   return getASTContext().getDeclAttrs(this);
 }
 
-Decl *Decl::castFromDeclContext (const DeclContext *D) {
+__attribute__((adaptive)) Decl *Decl::castFromDeclContext (const DeclContext *D) {
   Decl::Kind DK = D->getDeclKind();
   switch (DK) {
 #define DECL(NAME, BASE)

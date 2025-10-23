@@ -357,8 +357,8 @@ public:
       llvm_unreachable("unexpected sizeof(long)");
     }
   }
-  __attribute__((adaptive)) void AddInteger(long long I) { AddInteger((unsigned long long)I); }
-  void AddInteger(unsigned long long I) {
+  void AddInteger(long long I) { AddInteger((unsigned long long)I); }
+  __attribute__((adaptive)) void AddInteger(unsigned long long I) {
     AddInteger(unsigned(I));
     AddInteger(unsigned(I >> 32));
   }
