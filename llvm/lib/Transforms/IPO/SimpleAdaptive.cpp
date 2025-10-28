@@ -227,6 +227,7 @@ static void processFunctionWithSharedDispatcher(Function* F, Function* SharedDis
     FunctionMetadata metadata;
     metadata.original = F;
     metadata.functionId = funcId;
+    StringRef name = F->getName();
 
     // 1. Create two versions
     metadata.versions[0] = createVersion(F, 0, M);
@@ -242,7 +243,7 @@ static void processFunctionWithSharedDispatcher(Function* F, Function* SharedDis
     // 3. Replace original function with wrapper
     F->replaceAllUsesWith(metadata.wrapper);
     metadata.wrapper->takeName(F);
-    F->setName(F->getName() + "_original");
+    F->setName(name.str() + "_original");
     F->setLinkage(GlobalValue::InternalLinkage);
 
     // 4. Store metadata
