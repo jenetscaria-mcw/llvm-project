@@ -9,635 +9,467 @@
 #include "llvm/Support/raw_ostream.h"
 #include <map>
 #include <vector>
-#include <chrono>
 
 using namespace llvm;
 
 namespace llvm
 {
 
-    // Structure to track function metadata
-    struct FunctionMetadata
-    {
-        Function *original;
-        Function *versions[2]; // v0 and v1
-        Function *wrapper;
-        Function *bestVersion; // Pointer to the best performing version
-        uint32_t functionId;
-        FunctionType *signature; // Store original signature
-        uint64_t cpuCycles[2];   // CPU cycles for both versions
-    };
-
-    class SimpleAdaptivePassImpl
-    {
-    private:
-        std::map<Function *, FunctionMetadata> functionMap;
-        GlobalVariable *dispatchTable;
-        GlobalVariable *functionCounterTable;
-        GlobalVariable *functionCount;
-        GlobalVariable *cpuCyclesTable; // Table to store CPU cycles for each version
-        GlobalVariable *bestVersionTable; // Table to store best version for each function
-
-        // Helper functions
-        void addPrintToVersion(Function *F, int versionId, uint32_t funcId, Module &M);
-        Function *createVersion(Function *F, int versionId, Module &M);
-        void createGlobalDispatchInfrastructure(Module &M);
-        void processFunctionWithDirectDispatcher(Function *F, uint32_t funcId, Module &M);
-        void createInitializationFunction(Module &M);
-        Function *createDirectDispatchWrapper(Function *Original, uint32_t funcId, Module &M);
-        void addCPUCycleMeasurement(Function *F, int versionId, uint32_t funcId, Module &M);
-
-    public:
-        SimpleAdaptivePassImpl() : dispatchTable(nullptr), functionCounterTable(nullptr), 
-                                 functionCount(nullptr), cpuCyclesTable(nullptr), bestVersionTable(nullptr) {}
-
-        PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
-    };
-
-    PreservedAnalyses SimpleAdaptivePass::run(Module &M, ModuleAnalysisManager &AM)
-    {
-        SimpleAdaptivePassImpl impl;
-        return impl.run(M, AM);
-    }
-
-    PreservedAnalyses SimpleAdaptivePassImpl::run(Module &M, ModuleAnalysisManager &)
-    {
-        errs() << "=== SimpleAdaptive Pass Running ===\n";
-
-        // Clear any previous state
-        functionMap.clear();
-        dispatchTable = nullptr;
-        functionCounterTable = nullptr;
-        functionCount = nullptr;
-        cpuCyclesTable = nullptr;
-        bestVersionTable = nullptr;
-
-        // Step 1: Collect all adaptive functions
-        std::vector<Function *> adaptiveFunctions;
-        for (Function &F : M)
-        {
-            if (!F.isDeclaration() && F.hasFnAttribute("adaptive"))
-            {
-                errs() << "[ADAPTIVE] Found: " << F.getName() << "\n";
-                adaptiveFunctions.push_back(&F);
-            }
-        }
-
-        if (adaptiveFunctions.empty())
-        {
-            errs() << "No adaptive functions found in this module\n";
-            return PreservedAnalyses::all();
-        }
-
-        // Step 2: Create global dispatch infrastructure
-        createGlobalDispatchInfrastructure(M);
-
-        // Step 3: Process each adaptive function with direct dispatch
-        uint32_t funcId = 0;
-        for (Function *F : adaptiveFunctions)
-        {
-            processFunctionWithDirectDispatcher(F, funcId++, M);
-        }
-
-        // Step 4: Create initialization function
-        createInitializationFunction(M);
-
-        errs() << "=== Transformation Complete ===\n";
-        return PreservedAnalyses::none();
-    }
-
-    // === Create Global Infrastructure ===
-    void SimpleAdaptivePassImpl::createGlobalDispatchInfrastructure(Module &M)
-    {
-        LLVMContext &Ctx = M.getContext();
-
-        // Check if globals already exist
-        if (M.getGlobalVariable("__adaptive_dispatch_table"))
-        {
-            errs() << "  Dispatch infrastructure already exists, skipping creation\n";
-            dispatchTable = M.getGlobalVariable("__adaptive_dispatch_table");
-            functionCounterTable = M.getGlobalVariable("__adaptive_function_counters");
-            functionCount = M.getGlobalVariable("__adaptive_function_count");
-            cpuCyclesTable = M.getGlobalVariable("__adaptive_cpu_cycles");
-            bestVersionTable = M.getGlobalVariable("__adaptive_best_versions");
-            return;
-        }
-
-        // 1. Dispatch table: Array of function pointers for each version
-        ArrayType *DispatchTableType = ArrayType::get(
-            PointerType::get(Type::getInt8Ty(Ctx), 0),
-            200 // Max 100 functions * 2 versions
-        );
-
-        dispatchTable = new GlobalVariable(
-            M,
-            DispatchTableType,
-            false,
-            GlobalValue::InternalLinkage,
-            ConstantAggregateZero::get(DispatchTableType),
-            "__adaptive_dispatch_table");
-
-        // 2. Counter table: Array of counters for each function
-        ArrayType *CounterTableType = ArrayType::get(
-            Type::getInt32Ty(Ctx),
-            100 // Max 100 functions
-        );
-
-        functionCounterTable = new GlobalVariable(
-            M,
-            CounterTableType,
-            false,
-            GlobalValue::InternalLinkage,
-            ConstantAggregateZero::get(CounterTableType),
-            "__adaptive_function_counters");
-
-        // 3. Function count
-        functionCount = new GlobalVariable(
-            M,
-            Type::getInt32Ty(Ctx),
-            false,
-            GlobalValue::InternalLinkage,
-            ConstantInt::get(Type::getInt32Ty(Ctx), 0),
-            "__adaptive_function_count");
-
-        // 4. CPU cycles table: Array of uint64 for each function version (2 per function)
-        ArrayType *CPUCyclesTableType = ArrayType::get(
-            Type::getInt64Ty(Ctx),
-            200 // Max 100 functions * 2 versions
-        );
-
-        cpuCyclesTable = new GlobalVariable(
-            M,
-            CPUCyclesTableType,
-            false,
-            GlobalValue::InternalLinkage,
-            ConstantAggregateZero::get(CPUCyclesTableType),
-            "__adaptive_cpu_cycles");
-
-        // 5. Best version table: Array of integers indicating best version for each function
-        ArrayType *BestVersionTableType = ArrayType::get(
-            Type::getInt32Ty(Ctx),
-            100 // Max 100 functions
-        );
-
-        // Initialize with -1 (no best version determined yet)
-        Constant *InitialBestVersions = ConstantAggregateZero::get(BestVersionTableType);
-        bestVersionTable = new GlobalVariable(
-            M,
-            BestVersionTableType,
-            false,
-            GlobalValue::InternalLinkage,
-            InitialBestVersions,
-            "__adaptive_best_versions");
-
-        errs() << "  Created global dispatch infrastructure\n";
-    }
-
-    // === Process Each Function with Direct Dispatch ===
-    void SimpleAdaptivePassImpl::processFunctionWithDirectDispatcher(Function *F, uint32_t funcId, Module &M)
-    {
-        LLVMContext &Ctx = M.getContext();
-
-        // Create metadata entry
-        FunctionMetadata metadata;
-        metadata.original = F;
-        metadata.functionId = funcId;
-        metadata.signature = F->getFunctionType();
-        metadata.cpuCycles[0] = 0;
-        metadata.cpuCycles[1] = 0;
-        metadata.bestVersion = nullptr; // Will be set after profiling
-        StringRef name = F->getName();
-
-        // 1. Create two versions
-        metadata.versions[0] = createVersion(F, 0, M);
-        metadata.versions[1] = createVersion(F, 1, M);
-
-        // Add CPU cycle measurement and debug prints to versions
-        addCPUCycleMeasurement(metadata.versions[0], 0, funcId, M);
-        addCPUCycleMeasurement(metadata.versions[1], 1, funcId, M);
-        addPrintToVersion(metadata.versions[0], 0, funcId, M);
-        addPrintToVersion(metadata.versions[1], 1, funcId, M);
-
-        // 2. Create wrapper with direct dispatch (no shared dispatcher)
-        metadata.wrapper = createDirectDispatchWrapper(F, funcId, M);
-
-        // 3. Replace original function with wrapper
-        F->replaceAllUsesWith(metadata.wrapper);
-        metadata.wrapper->takeName(F);
-
-        F->setName(name.str() + "_original");
-        F->setLinkage(GlobalValue::InternalLinkage);
-
-        // 4. Store metadata
-        functionMap[F] = metadata;
-
-        errs() << "  Processed function " << funcId << ": " << F->getName() << "\n";
-        errs() << "    Versions: " << metadata.versions[0]->getName() << ", " << metadata.versions[1]->getName() << "\n";
-        errs() << "    Wrapper: " << metadata.wrapper->getName() << "\n";
-    }
-
-    // === Create Version ===
-    Function *SimpleAdaptivePassImpl::createVersion(Function *F, int versionId, Module &M)
-    {
-        ValueToValueMapTy VMap;
-        Function *NewF = CloneFunction(F, VMap);
-        NewF->setName(F->getName() + "_v" + std::to_string(versionId));
-        NewF->setLinkage(GlobalValue::InternalLinkage);
-
-        if (versionId == 1)
-        {
-            // Add optimization hints for v1
-            NewF->addFnAttr("prefer-vector-width", "256");
-            NewF->addFnAttr("target-features", "+avx2");
-        }
-
-        M.getFunctionList().push_back(NewF);
-        return NewF;
-    }
-
-    void SimpleAdaptivePassImpl::addCPUCycleMeasurement(Function *F, int versionId, uint32_t funcId, Module &M)
-    {
-        LLVMContext &Ctx = M.getContext();
-
-        // Get the first basic block and insert measurement at the beginning
-        BasicBlock &EntryBB = F->getEntryBlock();
-        IRBuilder<> Builder(&EntryBB, EntryBB.getFirstInsertionPt());
-
-        // Get current time at function entry
-        FunctionType *HighResClockType = FunctionType::get(Type::getInt64Ty(Ctx), false);
-        FunctionCallee HighResClock = M.getOrInsertFunction("llvm.readcyclecounter", HighResClockType);
-
-        Value *StartTime = Builder.CreateCall(HighResClock);
-
-        // Find all return instructions to insert end time measurement
-        std::vector<ReturnInst*> ReturnInsts;
-        for (BasicBlock &BB : *F)
-        {
-            if (ReturnInst *RI = dyn_cast<ReturnInst>(BB.getTerminator()))
-            {
-                ReturnInsts.push_back(RI);
-            }
-        }
-
-        // Insert end time measurement before each return
-        for (ReturnInst *RI : ReturnInsts)
-        {
-            IRBuilder<> ReturnBuilder(RI);
-
-            // Get end time
-            Value *EndTime = ReturnBuilder.CreateCall(HighResClock);
-
-            // Calculate elapsed cycles
-            Value *ElapsedCycles = ReturnBuilder.CreateSub(EndTime, StartTime);
-
-            // Store CPU cycles in global table
-            Value *CPUCycleIdx = ReturnBuilder.CreateAdd(
-                ReturnBuilder.CreateMul(
-                    ConstantInt::get(Type::getInt32Ty(Ctx), funcId),
-                    ConstantInt::get(Type::getInt32Ty(Ctx), 2)
-                ),
-                ConstantInt::get(Type::getInt32Ty(Ctx), versionId)
-            );
-
-            Value *CPUCyclePtr = ReturnBuilder.CreateGEP(
-                cpuCyclesTable->getValueType(),
-                cpuCyclesTable,
-                {ConstantInt::get(Type::getInt32Ty(Ctx), 0), CPUCycleIdx});
-
-            // Load current accumulated cycles and add new measurement
-            Value *CurrentCycles = ReturnBuilder.CreateLoad(Type::getInt64Ty(Ctx), CPUCyclePtr);
-            Value *NewCycles = ReturnBuilder.CreateAdd(CurrentCycles, ElapsedCycles);
-            ReturnBuilder.CreateStore(NewCycles, CPUCyclePtr);
-        }
-    }
-
-    void SimpleAdaptivePassImpl::addPrintToVersion(Function *F, int versionId, uint32_t funcId, Module &M)
-    {
-        LLVMContext &Ctx = M.getContext();
-
-        FunctionType *PrintfType = FunctionType::get(
-            Type::getInt32Ty(Ctx),
-            {PointerType::get(Type::getInt8Ty(Ctx), 0)},
-            true);
-        FunctionCallee Printf = M.getOrInsertFunction("printf", PrintfType);
-
-        BasicBlock &EntryBB = F->getEntryBlock();
-        IRBuilder<> Builder(&EntryBB, EntryBB.getFirstInsertionPt());
-
-        std::string FormatStr = "[EXECUTING] Function " + std::to_string(funcId) +
-                                ", Version " + std::to_string(versionId) +
-                                " (%s)\n";
-        Value *FormatStrVal = Builder.CreateGlobalStringPtr(FormatStr);
-        Value *FuncNameVal = Builder.CreateGlobalStringPtr(F->getName().str());
-
-        Builder.CreateCall(Printf, {FormatStrVal, FuncNameVal});
-    }
-
-    // === Create Direct Dispatch Wrapper ===
-    Function *SimpleAdaptivePassImpl::createDirectDispatchWrapper(Function *Original, uint32_t funcId, Module &M)
-    {
-        LLVMContext &Ctx = M.getContext();
-
-        // Create wrapper with same signature as original
-        Function *Wrapper = Function::Create(
-            Original->getFunctionType(),
-            Original->getLinkage(),
-            "temp_wrapper",
-            &M);
-
-        BasicBlock *Entry = BasicBlock::Create(Ctx, "entry", Wrapper);
-        IRBuilder<> Builder(Entry);
-
-        // Get printf for debugging
-        FunctionType *PrintfType = FunctionType::get(
-            Type::getInt32Ty(Ctx),
-            {PointerType::get(Type::getInt8Ty(Ctx), 0)},
-            true);
-        FunctionCallee Printf = M.getOrInsertFunction("printf", PrintfType);
-
-        // === DIRECT DISPATCH LOGIC ===
-
-        // 1. Load current counter
-        Value *CounterPtr = Builder.CreateGEP(
-            functionCounterTable->getValueType(),
-            functionCounterTable,
-            {ConstantInt::get(Type::getInt32Ty(Ctx), 0),
-            ConstantInt::get(Type::getInt32Ty(Ctx), funcId)});
-        Value *CurrentCount = Builder.CreateLoad(Type::getInt32Ty(Ctx), CounterPtr);
-        
-        // 2. Increment counter for next call
-        Value *NewCount = Builder.CreateAdd(CurrentCount, ConstantInt::get(Type::getInt32Ty(Ctx), 1));
-        Builder.CreateStore(NewCount, CounterPtr);
-
-        // 3. Debug print
-        Value *DebugMsg = Builder.CreateGlobalStringPtr("[DIRECT DISPATCH] Function %d, Call #%d: ");
-        Builder.CreateCall(Printf, {DebugMsg, ConstantInt::get(Type::getInt32Ty(Ctx), funcId), NewCount});
-
-        // 4. Check if we're in profiling phase (first 100 calls)
-        // Use CurrentCount (not NewCount) because we want to decide based on current call number
-        Value *ProfilingPhase = Builder.CreateICmpULT(CurrentCount, ConstantInt::get(Type::getInt32Ty(Ctx), 100));
-
-        // Create basic blocks for different dispatch strategies
-        BasicBlock *ProfilingBlock = BasicBlock::Create(Ctx, "profiling_dispatch", Wrapper);
-        BasicBlock *BestVersionBlock = BasicBlock::Create(Ctx, "best_version_dispatch", Wrapper);
-        BasicBlock *MergeBlock = BasicBlock::Create(Ctx, "merge", Wrapper);
-
-        Builder.CreateCondBr(ProfilingPhase, ProfilingBlock, BestVersionBlock);
-
-        // === Block 1: Profiling Phase (Alternate between versions 0 and 1 for calls 0-99) ===
-        Builder.SetInsertPoint(ProfilingBlock);
-        Value *ProfilingVersion = Builder.CreateURem(CurrentCount, ConstantInt::get(Type::getInt32Ty(Ctx), 2));
-        Value *ProfilingTableIdx = Builder.CreateAdd(
-        Builder.CreateMul(ConstantInt::get(Type::getInt32Ty(Ctx), funcId), 
-                        ConstantInt::get(Type::getInt32Ty(Ctx), 2)),
-        ProfilingVersion);
-        Value *ProfilingFuncPtrPtr = Builder.CreateGEP(
-        dispatchTable->getValueType(),
-        dispatchTable,
-        {ConstantInt::get(Type::getInt32Ty(Ctx), 0), ProfilingTableIdx});
-        Value *ProfilingFuncPtrGeneric = Builder.CreateLoad(PointerType::get(Type::getInt8Ty(Ctx), 0), ProfilingFuncPtrPtr);
-        Value *ProfilingFuncPtr = Builder.CreateBitCast(ProfilingFuncPtrGeneric, 
-                                                PointerType::get(Original->getFunctionType(), 0));
-
-        // === ADDED: Load and print CPU cycles for both versions ===
-        // Get CPU cycles for version 0
-        Value *CyclesV0Ptr = Builder.CreateGEP(
-        cpuCyclesTable->getValueType(),
-        cpuCyclesTable,
-        {ConstantInt::get(Type::getInt32Ty(Ctx), 0),
-            ConstantInt::get(Type::getInt32Ty(Ctx), funcId * 2)});
-        Value *CyclesV0 = Builder.CreateLoad(Type::getInt64Ty(Ctx), CyclesV0Ptr);
-
-        // Get CPU cycles for version 1  
-        Value *CyclesV1Ptr = Builder.CreateGEP(
-        cpuCyclesTable->getValueType(),
-        cpuCyclesTable,
-        {ConstantInt::get(Type::getInt32Ty(Ctx), 0),
-            ConstantInt::get(Type::getInt32Ty(Ctx), funcId * 2 + 1)});
-        Value *CyclesV1 = Builder.CreateLoad(Type::getInt64Ty(Ctx), CyclesV1Ptr);
-
-        // Print profiling information with CPU cycles
-        Value *ProfilingMsg = Builder.CreateGlobalStringPtr(
-        "Profiling Phase - Function %d, Call #%d, Version %d\n"
-        "  CPU Cycles: V0=%lu, V1=%lu, Current Total Calls=%d\n");
-        Builder.CreateCall(Printf, {ProfilingMsg, 
-                                ConstantInt::get(Type::getInt32Ty(Ctx), funcId),
-                                CurrentCount,
-                                ProfilingVersion,
-                                CyclesV0, 
-                                CyclesV1,
-                                CurrentCount});
-
-        Builder.CreateBr(MergeBlock);
-
-        // === Block 2: Best Version Phase (Calls 100 and beyond) ===
-        Builder.SetInsertPoint(BestVersionBlock);
-        
-        // Load best version for this function
-        Value *BestVersionPtr = Builder.CreateGEP(
-            bestVersionTable->getValueType(),
-            bestVersionTable,
-            {ConstantInt::get(Type::getInt32Ty(Ctx), 0),
-            ConstantInt::get(Type::getInt32Ty(Ctx), funcId)});
-        Value *BestVersion = Builder.CreateLoad(Type::getInt32Ty(Ctx), BestVersionPtr);
-        
-        // Check if best version is determined (not -1)
-        Value *BestVersionDetermined = Builder.CreateICmpSGE(BestVersion, ConstantInt::get(Type::getInt32Ty(Ctx), 0));
-        
-        BasicBlock *UseBestVersion = BasicBlock::Create(Ctx, "use_best_version", Wrapper);
-        BasicBlock *UseDefault = BasicBlock::Create(Ctx, "use_default", Wrapper);
-        
-        Builder.CreateCondBr(BestVersionDetermined, UseBestVersion, UseDefault);
-        
-        // Use best version if determined
-        Builder.SetInsertPoint(UseBestVersion);
-        Value *BestTableIdx = Builder.CreateAdd(
-            Builder.CreateMul(ConstantInt::get(Type::getInt32Ty(Ctx), funcId), 
-                            ConstantInt::get(Type::getInt32Ty(Ctx), 2)),
-            BestVersion);
-        Value *BestFuncPtrPtr = Builder.CreateGEP(
-            dispatchTable->getValueType(),
-            dispatchTable,
-            {ConstantInt::get(Type::getInt32Ty(Ctx), 0), BestTableIdx});
-        Value *BestFuncPtrGeneric = Builder.CreateLoad(PointerType::get(Type::getInt8Ty(Ctx), 0), BestFuncPtrPtr);
-        Value *BestFuncPtr = Builder.CreateBitCast(BestFuncPtrGeneric, 
-                                                PointerType::get(Original->getFunctionType(), 0));
-        
-        Value *BestMsg = Builder.CreateGlobalStringPtr("Best Version Phase - Using Version %d\n");
-        Builder.CreateCall(Printf, {BestMsg, BestVersion});
-        Builder.CreateBr(MergeBlock);
-        
-        // Use default (version 0) if best version not determined
-        Builder.SetInsertPoint(UseDefault);
-        Value *DefaultTableIdx = Builder.CreateMul(ConstantInt::get(Type::getInt32Ty(Ctx), funcId), 
-                                                ConstantInt::get(Type::getInt32Ty(Ctx), 2));
-        Value *DefaultFuncPtrPtr = Builder.CreateGEP(
-            dispatchTable->getValueType(),
-            dispatchTable,
-            {ConstantInt::get(Type::getInt32Ty(Ctx), 0), DefaultTableIdx});
-        Value *DefaultFuncPtrGeneric = Builder.CreateLoad(PointerType::get(Type::getInt8Ty(Ctx), 0), DefaultFuncPtrPtr);
-        Value *DefaultFuncPtr = Builder.CreateBitCast(DefaultFuncPtrGeneric, 
-                                                    PointerType::get(Original->getFunctionType(), 0));
-        
-        Value *DefaultMsg = Builder.CreateGlobalStringPtr("Best Version Not Determined - Using Default Version 0\n");
-        Builder.CreateCall(Printf, {DefaultMsg});
-        Builder.CreateBr(MergeBlock);
-
-        // === Merge Block: Call the selected function ===
-        Builder.SetInsertPoint(MergeBlock);
-        
-        // PHI node to select the correct function pointer
-        PHINode *FuncPtrPhi = Builder.CreatePHI(PointerType::get(Original->getFunctionType(), 0), 3);
-        FuncPtrPhi->addIncoming(ProfilingFuncPtr, ProfilingBlock);
-        FuncPtrPhi->addIncoming(BestFuncPtr, UseBestVersion);
-        FuncPtrPhi->addIncoming(DefaultFuncPtr, UseDefault);
-
-        // Collect arguments
-        std::vector<Value *> Args;
-        for (auto &Arg : Wrapper->args())
-        {
-            Args.push_back(&Arg);
-        }
-
-        // Call the selected function
-        Value *Result = nullptr;
-        if (Original->getReturnType()->isVoidTy())
-        {
-            Builder.CreateCall(Original->getFunctionType(), FuncPtrPhi, Args);
-            Builder.CreateRetVoid();
-        }
-        else
-        {
-            Result = Builder.CreateCall(Original->getFunctionType(), FuncPtrPhi, Args);
-            Builder.CreateRet(Result);
-        }
-
-        return Wrapper;
-    }
-
-    // === Create Initialization Function ===
-    void SimpleAdaptivePassImpl::createInitializationFunction(Module &M)
-    {
-        LLVMContext &Ctx = M.getContext();
-
-        // Check if init function already exists
-        if (M.getFunction("__adaptive_init"))
-        {
-            errs() << "  Initialization function already exists, skipping\n";
-            return;
-        }
-
-        // Create initialization function
-        FunctionType *InitType = FunctionType::get(Type::getVoidTy(Ctx), {}, false);
-        Function *InitFunc = Function::Create(
-            InitType,
-            GlobalValue::InternalLinkage,
-            "__adaptive_init",
-            &M);
-
-        BasicBlock *Entry = BasicBlock::Create(Ctx, "entry", InitFunc);
-        IRBuilder<> Builder(Entry);
-
-        // Get printf for debugging
-        FunctionCallee Printf = M.getOrInsertFunction("printf",
-                                                      FunctionType::get(Type::getInt32Ty(Ctx), 
-                                                                      {PointerType::get(Type::getInt8Ty(Ctx), 0)}, 
-                                                                      true));
-
-        // Populate dispatch table with function pointers
-        uint32_t tableIdx = 0;
-        for (auto &[OrigFunc, Metadata] : functionMap)
-        {
-            for (int v = 0; v < 2; v++)
-            {
-                Value *Slot = Builder.CreateGEP(
-                    dispatchTable->getValueType(),
-                    dispatchTable,
-                    {ConstantInt::get(Type::getInt32Ty(Ctx), 0),
-                     ConstantInt::get(Type::getInt32Ty(Ctx), tableIdx++)});
-
-                // Cast function pointer to i8* for storage
-                Value *FuncPtr = Builder.CreateBitCast(
-                    Metadata.versions[v],
-                    PointerType::get(Type::getInt8Ty(Ctx), 0));
-                Builder.CreateStore(FuncPtr, Slot);
-            }
-        }
-
-        // Store function count
-        Builder.CreateStore(
-            ConstantInt::get(Type::getInt32Ty(Ctx), functionMap.size()),
-            functionCount);
-
-        // Create a function to determine best versions (called after profiling)
-        FunctionType *DetermineBestType = FunctionType::get(Type::getVoidTy(Ctx), false);
-        Function *DetermineBestFunc = Function::Create(
-            DetermineBestType,
-            GlobalValue::InternalLinkage,
-            "__adaptive_determine_best_versions",
-            &M);
-
-        BasicBlock *DetermineBB = BasicBlock::Create(Ctx, "entry", DetermineBestFunc);
-        IRBuilder<> DetermineBuilder(DetermineBB);
-
-        // For each function, compare CPU cycles and select best version
-        for (auto &[OrigFunc, Metadata] : functionMap)
-        {
-            uint32_t funcId = Metadata.functionId;
-            
-            // Load CPU cycles for both versions
-            Value *CyclesV0Ptr = DetermineBuilder.CreateGEP(
-                cpuCyclesTable->getValueType(),
-                cpuCyclesTable,
-                {ConstantInt::get(Type::getInt32Ty(Ctx), 0),
-                 ConstantInt::get(Type::getInt32Ty(Ctx), funcId * 2)});
-            Value *CyclesV0 = DetermineBuilder.CreateLoad(Type::getInt64Ty(Ctx), CyclesV0Ptr);
-            
-            Value *CyclesV1Ptr = DetermineBuilder.CreateGEP(
-                cpuCyclesTable->getValueType(),
-                cpuCyclesTable,
-                {ConstantInt::get(Type::getInt32Ty(Ctx), 0),
-                 ConstantInt::get(Type::getInt32Ty(Ctx), funcId * 2 + 1)});
-            Value *CyclesV1 = DetermineBuilder.CreateLoad(Type::getInt64Ty(Ctx), CyclesV1Ptr);
-            
-            // Compare cycles and select version with fewer cycles
-            Value *V0IsBetter = DetermineBuilder.CreateICmpULT(CyclesV0, CyclesV1);
-            Value *BestVersion = DetermineBuilder.CreateSelect(V0IsBetter, 
-                                                             ConstantInt::get(Type::getInt32Ty(Ctx), 0),
-                                                             ConstantInt::get(Type::getInt32Ty(Ctx), 1));
-            
-            // Store best version
-            Value *BestVersionPtr = DetermineBuilder.CreateGEP(
-                bestVersionTable->getValueType(),
-                bestVersionTable,
-                {ConstantInt::get(Type::getInt32Ty(Ctx), 0),
-                 ConstantInt::get(Type::getInt32Ty(Ctx), funcId)});
-            DetermineBuilder.CreateStore(BestVersion, BestVersionPtr);
-            
-            // Debug print
-            Value *BestMsg = DetermineBuilder.CreateGlobalStringPtr(
-                "Function %d: V0=%lu cycles, V1=%lu cycles, Best=%d\n");
-            DetermineBuilder.CreateCall(Printf, {BestMsg, 
-                                               ConstantInt::get(Type::getInt32Ty(Ctx), funcId),
-                                               CyclesV0, CyclesV1, BestVersion});
-        }
-        
-        DetermineBuilder.CreateRetVoid();
-
-        // Call the determine best versions function in the init
-        Builder.CreateCall(DetermineBestType, DetermineBestFunc);
-
-        Value *InitMsg = Builder.CreateGlobalStringPtr(
-            "[INIT] Adaptive dispatcher initialized with %d functions\n");
-        Value *Count = Builder.CreateLoad(Type::getInt32Ty(Ctx), functionCount);
-        Builder.CreateCall(Printf, {InitMsg, Count});
-
-        Builder.CreateRetVoid();
-
-        // Register to run before main
-        appendToGlobalCtors(M, InitFunc, 65535);
-
-        errs() << "  Created initialization function with best version selection\n";
-    }
-
-} // namespace llvm
+    struct FunctionMetadata
+    {
+        Function *original;
+        Function *versions[2]; // v0 and v1
+        Function *wrapper;
+        uint32_t functionId;
+        FunctionType *signature;
+
+        // Per-function static globals for adaptive runtime tracking
+        GlobalVariable *callCounter;  // call count
+        GlobalVariable *cpuCycles[2]; // accumulated cpu cycles per version
+        GlobalVariable *runCount[2];  // runs per version
+        GlobalVariable *bestVersion;  // best version index after profiling
+        GlobalVariable *currentPhase; // 0=profiling, 1=optimal
+    };
+
+    class SimpleAdaptivePassImpl
+    {
+    private:
+        std::map<Function *, FunctionMetadata> functionMap;
+
+        Function *createVersion(Function *F, int versionId, Module &M);
+        void createWrapperStaticVars(FunctionMetadata &metadata, Module &M);
+        void processFunctionWithDirectDispatch(Function *F, uint32_t funcId, Module &M);
+        Function *createOptimizedDispatchWrapper(FunctionMetadata &metadata, Module &M);
+        void addCPUCycleMeasurement(Function *F, FunctionMetadata &metadata, int versionId, Module &M);
+        void createInitializationFunction(Module &M);
+
+    public:
+        SimpleAdaptivePassImpl() {}
+
+        PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
+    };
+
+    PreservedAnalyses SimpleAdaptivePass::run(Module &M, ModuleAnalysisManager &AM)
+    {
+        SimpleAdaptivePassImpl impl;
+        return impl.run(M, AM);
+    }
+
+    PreservedAnalyses SimpleAdaptivePassImpl::run(Module &M, ModuleAnalysisManager &)
+    {
+        errs() << "=== SimpleAdaptive Pass Running ===\n";
+        functionMap.clear();
+
+        // Collect adaptive functions
+        std::vector<Function *> adaptiveFunctions;
+        for (Function &F : M)
+        {
+            if (!F.isDeclaration() && F.hasFnAttribute("adaptive"))
+            {
+                errs() << "[ADAPTIVE] Found: " << F.getName() << "\n";
+                adaptiveFunctions.push_back(&F);
+            }
+        }
+        if (adaptiveFunctions.empty())
+        {
+            errs() << "No adaptive functions found in this module\n";
+            return PreservedAnalyses::all();
+        }
+
+        uint32_t funcId = 0;
+        for (Function *F : adaptiveFunctions)
+        {
+            processFunctionWithDirectDispatch(F, funcId++, M);
+        }
+
+        createInitializationFunction(M);
+
+        errs() << "=== Transformation Complete ===\n";
+        return PreservedAnalyses::none();
+    }
+
+    void SimpleAdaptivePassImpl::createWrapperStaticVars(FunctionMetadata &metadata, Module &M)
+    {
+        LLVMContext &Ctx = M.getContext();
+        std::string baseName = metadata.original->getName().str();
+
+        metadata.callCounter = new GlobalVariable(
+            M, Type::getInt32Ty(Ctx), false, GlobalValue::InternalLinkage,
+            ConstantInt::get(Type::getInt32Ty(Ctx), 0),
+            "__static_counter_" + baseName);
+
+        for (int v = 0; v < 2; v++)
+        {
+            metadata.cpuCycles[v] = new GlobalVariable(
+                M, Type::getInt64Ty(Ctx), false, GlobalValue::InternalLinkage,
+                ConstantInt::get(Type::getInt64Ty(Ctx), 0),
+                "__static_cycles_" + baseName + "_v" + std::to_string(v));
+
+            metadata.runCount[v] = new GlobalVariable(
+                M, Type::getInt32Ty(Ctx), false, GlobalValue::InternalLinkage,
+                ConstantInt::get(Type::getInt32Ty(Ctx), 0),
+                "__static_runs_" + baseName + "_v" + std::to_string(v));
+        }
+
+        metadata.bestVersion = new GlobalVariable(
+            M, Type::getInt32Ty(Ctx), false, GlobalValue::InternalLinkage,
+            ConstantInt::get(Type::getInt32Ty(Ctx), -1),
+            "__static_best_" + baseName);
+
+        metadata.currentPhase = new GlobalVariable(
+            M, Type::getInt32Ty(Ctx), false, GlobalValue::InternalLinkage,
+            ConstantInt::get(Type::getInt32Ty(Ctx), 0),
+            "__static_phase_" + baseName);
+
+        errs() << "  Created static variables for " << baseName << "\n";
+    }
+
+    void SimpleAdaptivePassImpl::addCPUCycleMeasurement(Function *F, FunctionMetadata &metadata, int versionId, Module &M)
+	{
+		LLVMContext &Ctx = M.getContext();
+
+		FunctionType *RdtscType = FunctionType::get(Type::getInt64Ty(Ctx), {}, false);
+		FunctionCallee Rdtsc = M.getOrInsertFunction("llvm.readcyclecounter", RdtscType);
+
+		// Get printf function for debugging
+		FunctionType *PrintfType = FunctionType::get(Type::getInt32Ty(Ctx), 
+													{PointerType::get(Type::getInt8Ty(Ctx), 0)}, true);
+		FunctionCallee Printf = M.getOrInsertFunction("printf", PrintfType);
+
+		BasicBlock &EntryBB = F->getEntryBlock();
+		IRBuilder<> Builder(&EntryBB, EntryBB.getFirstInsertionPt());
+
+		Value *StartTime = Builder.CreateCall(Rdtsc);
+
+		std::vector<ReturnInst*> returns;
+		for (BasicBlock &BB : *F)
+			if (auto *RI = dyn_cast<ReturnInst>(BB.getTerminator()))
+				returns.push_back(RI);
+
+		for (ReturnInst *RI : returns)
+		{
+			IRBuilder<> RetBuilder(RI);
+			Value *EndTime = RetBuilder.CreateCall(Rdtsc);
+			Value *ElapsedCycles = RetBuilder.CreateSub(EndTime, StartTime);
+
+			// Load, update, and store cycles
+			Value *CurCycles = RetBuilder.CreateLoad(Type::getInt64Ty(Ctx), metadata.cpuCycles[versionId]);
+			Value *NewCycles = RetBuilder.CreateAdd(CurCycles, ElapsedCycles);
+			RetBuilder.CreateStore(NewCycles, metadata.cpuCycles[versionId]);
+
+			// Load, update, and store runs
+			Value *CurRuns = RetBuilder.CreateLoad(Type::getInt32Ty(Ctx), metadata.runCount[versionId]);
+			Value *NewRuns = RetBuilder.CreateAdd(CurRuns, ConstantInt::get(Type::getInt32Ty(Ctx), 1));
+			RetBuilder.CreateStore(NewRuns, metadata.runCount[versionId]);
+
+			// ADDED: Print CPU cycles and run counts after each execution
+			Value *FuncName = RetBuilder.CreateGlobalStringPtr(F->getName());
+			Value *CyclesMsg = RetBuilder.CreateGlobalStringPtr(
+				"[CYCLES] %s_v%d: This run=%lu cycles, Total cycles=%lu, Total runs=%d\n");
+			RetBuilder.CreateCall(Printf, {CyclesMsg, FuncName, 
+										ConstantInt::get(Type::getInt32Ty(Ctx), versionId),
+										ElapsedCycles, NewCycles, NewRuns});
+		}
+	}
+
+    Function *SimpleAdaptivePassImpl::createVersion(Function *F, int versionId, Module &M)
+    {
+        ValueToValueMapTy VMap;
+        Function *NewF = CloneFunction(F, VMap);
+        NewF->setName(F->getName() + "_v" + std::to_string(versionId));
+        NewF->setLinkage(GlobalValue::InternalLinkage);
+
+        if (versionId == 1)
+        {
+            NewF->addFnAttr("prefer-vector-width", "256");
+            NewF->addFnAttr("target-features", "+avx2");
+        }
+
+        M.getFunctionList().push_back(NewF);
+        return NewF;
+    }
+
+    void SimpleAdaptivePassImpl::processFunctionWithDirectDispatch(Function *F, uint32_t funcId, Module &M)
+    {
+        FunctionMetadata metadata;
+        metadata.original = F;
+        metadata.functionId = funcId;
+        metadata.signature = F->getFunctionType();
+
+        metadata.versions[0] = createVersion(F, 0, M);
+        metadata.versions[1] = createVersion(F, 1, M);
+
+        createWrapperStaticVars(metadata, M);
+//         addCPUCycleMeasurement(metadata.versions[0], metadata, 0, M);
+//         addCPUCycleMeasurement(metadata.versions[1], metadata, 1, M);
+
+        metadata.wrapper = createOptimizedDispatchWrapper(metadata, M);
+
+        F->replaceAllUsesWith(metadata.wrapper);
+        metadata.wrapper->takeName(F);
+
+        F->setName(F->getName().str() + "_original");
+        F->setLinkage(GlobalValue::InternalLinkage);
+
+        functionMap[F] = metadata;
+
+        errs() << "Processed function " << funcId << ": " << F->getName() << "\n";
+    }
+
+    Function *SimpleAdaptivePassImpl::createOptimizedDispatchWrapper(FunctionMetadata &metadata, Module &M)
+	{
+		LLVMContext &Ctx = M.getContext();
+		Function *Orig = metadata.original;
+
+		Function *Wrapper = Function::Create(
+			Orig->getFunctionType(), Orig->getLinkage(), Orig->getName() + "_wrapper", &M);
+
+		BasicBlock *Entry = BasicBlock::Create(Ctx, "entry", Wrapper);
+		IRBuilder<> Builder(Entry);
+
+		FunctionType *PrintfType = FunctionType::get(Type::getInt32Ty(Ctx),
+													{PointerType::get(Type::getInt8Ty(Ctx), 0)}, true);
+		FunctionCallee Printf = M.getOrInsertFunction("printf", PrintfType);
+
+		// ADD: Get rdtsc intrinsic for cycle measurement in wrapper
+		FunctionType *RdtscType = FunctionType::get(Type::getInt64Ty(Ctx), {}, false);
+		FunctionCallee Rdtsc = M.getOrInsertFunction("llvm.readcyclecounter", RdtscType);
+
+		Value *Count = Builder.CreateLoad(Type::getInt32Ty(Ctx), metadata.callCounter);
+		Value *NewCount = Builder.CreateAdd(Count, ConstantInt::get(Type::getInt32Ty(Ctx), 1));
+		Builder.CreateStore(NewCount, metadata.callCounter);
+
+		// ADDED: Print total call count
+		printf("check\n");
+		// Value *CallCountMsg = Builder.CreateGlobalStringPtr("[CALL_COUNT] %s: Total calls=%d\n");
+		Value *FuncName = Builder.CreateGlobalStringPtr(Orig->getName());
+		// Builder.CreateCall(Printf, {CallCountMsg, FuncName, NewCount});
+
+		Value *Phase = Builder.CreateLoad(Type::getInt32Ty(Ctx), metadata.currentPhase);
+
+		BasicBlock *ProfPhaseBB = BasicBlock::Create(Ctx, "profiling_phase", Wrapper);
+		BasicBlock *OptPhaseBB = BasicBlock::Create(Ctx, "optimal_phase", Wrapper);
+		Builder.CreateCondBr(
+			Builder.CreateICmpEQ(Phase, ConstantInt::get(Type::getInt32Ty(Ctx), 1)), OptPhaseBB, ProfPhaseBB);
+
+		// Profiling phase: alternate versions and measure
+		Builder.SetInsertPoint(ProfPhaseBB);
+		Value *Version = Builder.CreateURem(Count, ConstantInt::get(Type::getInt32Ty(Ctx), 2));
+
+		Value *ShouldUpdateBest = Builder.CreateICmpEQ(NewCount, ConstantInt::get(Type::getInt32Ty(Ctx), 101));   // Best version should be used from 101st run
+
+		BasicBlock *ContinueProfBB = BasicBlock::Create(Ctx, "continue_prof", Wrapper);
+		BasicBlock *UpdateBestBB = BasicBlock::Create(Ctx, "update_best", Wrapper);
+
+		Builder.CreateCondBr(ShouldUpdateBest, UpdateBestBB, ContinueProfBB);
+
+		Builder.SetInsertPoint(ContinueProfBB);
+		{
+			Value *IsVersion1 = Builder.CreateICmpEQ(Version, ConstantInt::get(Type::getInt32Ty(Ctx), 1));
+			Value *FuncV0 = Builder.CreatePointerCast(metadata.versions[0], Orig->getFunctionType()->getPointerTo());
+			Value *FuncV1 = Builder.CreatePointerCast(metadata.versions[1], Orig->getFunctionType()->getPointerTo());
+			Value *FuncPtr = Builder.CreateSelect(IsVersion1, FuncV1, FuncV0);
+			
+			// ADD: Measure cycles in wrapper before calling
+			Value *StartTime = Builder.CreateCall(Rdtsc);
+			
+			// Debug message
+			Value *FormatStr = Builder.CreateGlobalStringPtr("[PROFILING] %s: Call %d, using version %d\n");
+			Builder.CreateCall(Printf, {FormatStr, FuncName, NewCount, Version});
+			
+			// Call version
+			std::vector<Value *> Args;
+			for (auto &Arg : Wrapper->args())
+				Args.push_back(&Arg);
+
+			Value *Result;
+			if (Orig->getReturnType()->isVoidTy()) {
+				Builder.CreateCall(Orig->getFunctionType(), FuncPtr, Args);
+				Result = nullptr;
+			} else {
+				Result = Builder.CreateCall(Orig->getFunctionType(), FuncPtr, Args);
+			}
+
+			// ADD: Measure end time and print cycles
+			Value *EndTime = Builder.CreateCall(Rdtsc);
+			Value *ElapsedCycles = Builder.CreateSub(EndTime, StartTime);
+			
+			// Value *CycleMsg = Builder.CreateGlobalStringPtr("[CYCLES] Call %d took %lu cycles (version %d)\n");
+			// Builder.CreateCall(Printf, {CycleMsg, NewCount, ElapsedCycles, Version});
+
+			// ADD: Update cycle counters for the called version
+			// Create a select to choose which counter to update
+			Value *CurrentCyclesV0 = Builder.CreateLoad(Type::getInt64Ty(Ctx), metadata.cpuCycles[0]);
+			Value *CurrentCyclesV1 = Builder.CreateLoad(Type::getInt64Ty(Ctx), metadata.cpuCycles[1]);
+			Value *NewCyclesV0 = Builder.CreateAdd(CurrentCyclesV0, ElapsedCycles);
+			Value *NewCyclesV1 = Builder.CreateAdd(CurrentCyclesV1, ElapsedCycles);
+			
+			// Store to appropriate version based on selection
+			Builder.CreateStore(Builder.CreateSelect(IsVersion1, CurrentCyclesV0, NewCyclesV0), metadata.cpuCycles[0]);
+			Builder.CreateStore(Builder.CreateSelect(IsVersion1, NewCyclesV1, CurrentCyclesV1), metadata.cpuCycles[1]);
+
+			// ADD: Update run counts
+			Value *CurrentRunsV0 = Builder.CreateLoad(Type::getInt32Ty(Ctx), metadata.runCount[0]);
+			Value *CurrentRunsV1 = Builder.CreateLoad(Type::getInt32Ty(Ctx), metadata.runCount[1]);
+			Value *NewRunsV0 = Builder.CreateAdd(CurrentRunsV0, ConstantInt::get(Type::getInt32Ty(Ctx), 1));
+			Value *NewRunsV1 = Builder.CreateAdd(CurrentRunsV1, ConstantInt::get(Type::getInt32Ty(Ctx), 1));
+			
+			Builder.CreateStore(Builder.CreateSelect(IsVersion1, CurrentRunsV0, NewRunsV0), metadata.runCount[0]);
+			Builder.CreateStore(Builder.CreateSelect(IsVersion1, NewRunsV1, CurrentRunsV1), metadata.runCount[1]);
+
+			// Print updated counters
+			Value *UpdatedMsg = Builder.CreateGlobalStringPtr("[UPDATED] V0: %lu cycles, %d runs | V1: %lu cycles, %d runs\n");
+			Builder.CreateCall(Printf, {UpdatedMsg, 
+									Builder.CreateSelect(IsVersion1, CurrentCyclesV0, NewCyclesV0),
+									Builder.CreateSelect(IsVersion1, CurrentRunsV0, NewRunsV0),
+									Builder.CreateSelect(IsVersion1, NewCyclesV1, CurrentCyclesV1),
+									Builder.CreateSelect(IsVersion1, NewRunsV1, CurrentRunsV1)});
+
+			if (Orig->getReturnType()->isVoidTy()) {
+				Builder.CreateRetVoid();
+			} else {
+				Builder.CreateRet(Result);
+			}
+		}
+
+		Builder.SetInsertPoint(UpdateBestBB);
+		{
+			Value *V0Cycles = Builder.CreateLoad(Type::getInt64Ty(Ctx), metadata.cpuCycles[0]);
+			Value *V1Cycles = Builder.CreateLoad(Type::getInt64Ty(Ctx), metadata.cpuCycles[1]);
+			Value *V0Runs = Builder.CreateLoad(Type::getInt32Ty(Ctx), metadata.runCount[0]);
+			Value *V1Runs = Builder.CreateLoad(Type::getInt32Ty(Ctx), metadata.runCount[1]);
+			Value *V0Runs64 = Builder.CreateZExt(V0Runs, Type::getInt64Ty(Ctx));
+			Value *V1Runs64 = Builder.CreateZExt(V1Runs, Type::getInt64Ty(Ctx));
+			Value *V0Avg = Builder.CreateUDiv(V0Cycles, V0Runs64);
+			Value *V1Avg = Builder.CreateUDiv(V1Cycles, V1Runs64);
+
+			// ADDED: Print detailed statistics before computing best version
+			Value *StatsMsg = Builder.CreateGlobalStringPtr(
+				"[STATS] %s - V0: total_cycles=%lu, runs=%d, avg=%lu | V1: total_cycles=%lu, runs=%d, avg=%lu\n");
+			Builder.CreateCall(Printf, {StatsMsg, FuncName, 
+									V0Cycles, V0Runs, V0Avg, 
+									V1Cycles, V1Runs, V1Avg});
+
+			Value *V0Better = Builder.CreateICmpULT(V0Avg, V1Avg);
+			Value *BestVersion = Builder.CreateSelect(V0Better, ConstantInt::get(Type::getInt32Ty(Ctx), 0), ConstantInt::get(Type::getInt32Ty(Ctx), 1));
+			Builder.CreateStore(BestVersion, metadata.bestVersion);
+			Builder.CreateStore(ConstantInt::get(Type::getInt32Ty(Ctx), 1), metadata.currentPhase);
+
+			Value *Msg = Builder.CreateGlobalStringPtr("[BEST] Computed best version %d\n");
+			Builder.CreateCall(Printf, {Msg, BestVersion});
+
+			// ADD: Measure cycles for this best version call too
+			Value *BestStartTime = Builder.CreateCall(Rdtsc);
+			
+			// Dispatch to best version now
+			Value *IsBestVersion1 = Builder.CreateICmpEQ(BestVersion, ConstantInt::get(Type::getInt32Ty(Ctx), 1));
+			Value *FuncV0 = Builder.CreatePointerCast(metadata.versions[0], Orig->getFunctionType()->getPointerTo());
+			Value *FuncV1 = Builder.CreatePointerCast(metadata.versions[1], Orig->getFunctionType()->getPointerTo());
+			Value *FuncPtr = Builder.CreateSelect(IsBestVersion1, FuncV1, FuncV0);
+			
+			std::vector<Value *> Args;
+			for (auto &Arg : Wrapper->args())
+				Args.push_back(&Arg);
+
+			Value *Result;
+			if (Orig->getReturnType()->isVoidTy()) {
+				Builder.CreateCall(Orig->getFunctionType(), FuncPtr, Args);
+				Result = nullptr;
+			} else {
+				Result = Builder.CreateCall(Orig->getFunctionType(), FuncPtr, Args);
+			}
+
+			// ADD: Measure best version cycles
+			Value *BestEndTime = Builder.CreateCall(Rdtsc);
+			Value *BestElapsed = Builder.CreateSub(BestEndTime, BestStartTime);
+			Value *BestCycleMsg = Builder.CreateGlobalStringPtr("[BEST_CYCLES] Best version call took %lu cycles\n");
+			Builder.CreateCall(Printf, {BestCycleMsg, BestElapsed});
+
+			if (Orig->getReturnType()->isVoidTy()) {
+				Builder.CreateRetVoid();
+			} else {
+				Builder.CreateRet(Result);
+			}
+		}
+
+		// Optimal phase: always use bestVersion
+		Builder.SetInsertPoint(OptPhaseBB);
+		{
+			Value *BestVersion = Builder.CreateLoad(Type::getInt32Ty(Ctx), metadata.bestVersion);
+			
+			// ADD: Measure cycles in optimal phase
+			Value *OptimalStartTime = Builder.CreateCall(Rdtsc);
+			
+			// ADDED: Print current run counts and cycles in optimal phase
+			Value *V0Cycles = Builder.CreateLoad(Type::getInt64Ty(Ctx), metadata.cpuCycles[0]);
+			Value *V1Cycles = Builder.CreateLoad(Type::getInt64Ty(Ctx), metadata.cpuCycles[1]);
+			Value *V0Runs = Builder.CreateLoad(Type::getInt32Ty(Ctx), metadata.runCount[0]);
+			Value *V1Runs = Builder.CreateLoad(Type::getInt32Ty(Ctx), metadata.runCount[1]);
+			
+			Value *OptimalStatsMsg = Builder.CreateGlobalStringPtr(
+				"[OPTIMAL_STATS] %s - V0: cycles=%lu, runs=%d | V1: cycles=%lu, runs=%d | Using version %d\n");
+			Builder.CreateCall(Printf, {OptimalStatsMsg, FuncName, 
+									V0Cycles, V0Runs, V1Cycles, V1Runs, BestVersion});
+
+			Value *FuncV0 = Builder.CreatePointerCast(metadata.versions[0], Orig->getFunctionType()->getPointerTo());
+			Value *FuncV1 = Builder.CreatePointerCast(metadata.versions[1], Orig->getFunctionType()->getPointerTo());
+
+			Value *FuncPtr = Builder.CreateSelect(
+				Builder.CreateICmpEQ(BestVersion, ConstantInt::get(BestVersion->getType(), 0)),
+				FuncV0,
+				FuncV1);
+
+			Value *Msg = Builder.CreateGlobalStringPtr("[OPTIMAL] Using best version %d\n");
+			Builder.CreateCall(Printf, {Msg, BestVersion});
+
+			std::vector<Value *> Args;
+			for (auto &Arg : Wrapper->args())
+				Args.push_back(&Arg);
+
+			Value *Result;
+			if (Orig->getReturnType()->isVoidTy()) {
+				Builder.CreateCall(Orig->getFunctionType(), FuncPtr, Args);
+				Result = nullptr;
+			} else {
+				Result = Builder.CreateCall(Orig->getFunctionType(), FuncPtr, Args);
+			}
+
+			// ADD: Measure optimal phase cycles
+			Value *OptimalEndTime = Builder.CreateCall(Rdtsc);
+			Value *OptimalElapsed = Builder.CreateSub(OptimalEndTime, OptimalStartTime);
+			Value *OptimalCycleMsg = Builder.CreateGlobalStringPtr("[OPTIMAL_CYCLES] Call took %lu cycles\n");
+			Builder.CreateCall(Printf, {OptimalCycleMsg, OptimalElapsed});
+
+			if (Orig->getReturnType()->isVoidTy()) {
+				Builder.CreateRetVoid();
+			} else {
+				Builder.CreateRet(Result);
+			}
+		}
+
+		return Wrapper;
+	}
+
+    void SimpleAdaptivePassImpl::createInitializationFunction(Module &M)
+    {
+        LLVMContext &Ctx = M.getContext();
+
+        if (M.getFunction("__adaptive_init"))
+            return;
+
+        FunctionType *InitType = FunctionType::get(Type::getVoidTy(Ctx), {}, false);
+        Function *InitFunc = Function::Create(InitType, GlobalValue::InternalLinkage, "__adaptive_init", &M);
+        BasicBlock *Entry = BasicBlock::Create(Ctx, "entry", InitFunc);
+        IRBuilder<> Builder(Entry);
+
+        // Print initialization message
+        FunctionCallee Printf = M.getOrInsertFunction("printf",
+                                                  FunctionType::get(Type::getInt32Ty(Ctx), {PointerType::get(Type::getInt8Ty(Ctx), 0)}, true));
+        Value *InitMsg = Builder.CreateGlobalStringPtr("[INIT] Adaptive dispatcher initialized\n");
+        Builder.CreateCall(Printf, {InitMsg});
+        Builder.CreateRetVoid();
+
+        appendToGlobalCtors(M, InitFunc, 65535);
+    }
+
+} // end namespace llvm
