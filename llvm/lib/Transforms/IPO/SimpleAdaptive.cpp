@@ -187,7 +187,7 @@ Function *SimpleAdaptivePassImpl::createVersion(Function *F, int versionId, Modu
             NewF->addFnAttr("prefer-vector-width", "512");
             NewF->addFnAttr("min-legal-vector-width", "256");
             NewF->addFnAttr("target-features", "+avx512f,+avx512vl,+avx2,+fma");
-            NewF->addFnAttr("target-cpu", "skylake-avx512");
+            // NewF->addFnAttr("target-cpu", "skylake-avx512");
             NewF->addFnAttr("vectorize-predicate", "enable");
             NewF->addFnAttr("force-vector-width", "8");
             NewF->addFnAttr("force-vector-interleave", "4");
@@ -228,7 +228,7 @@ Function *SimpleAdaptivePassImpl::createVersion(Function *F, int versionId, Modu
             NewF->addFnAttr("select-optimize", "true");
             // errs() << "  V4: Branch Optimized (predictable branches)\n";
             break;
-        case 5:  // Math Operations
+        case 5:  // HYBRID - Best of Multiple Optimizations
             NewF->addFnAttr("unsafe-fp-math", "true");
             NewF->addFnAttr("no-nans-fp-math", "true");
             NewF->addFnAttr("no-infs-fp-math", "true");
@@ -304,7 +304,7 @@ Function *SimpleAdaptivePassImpl::createOptimizedDispatchWrapper(FunctionMetadat
     Builder.SetInsertPoint(ProfPhaseBB);
     Value *Version = Builder.CreateURem(Count, ConstantInt::get(Type::getInt32Ty(Ctx), NUM_VERSIONS));
 
-    Value *ShouldUpdateBest = Builder.CreateICmpUGE(NewCount, ConstantInt::get(Type::getInt32Ty(Ctx), 36));
+    Value *ShouldUpdateBest = Builder.CreateICmpUGE(NewCount, ConstantInt::get(Type::getInt32Ty(Ctx), 61));
 
     BasicBlock *ContinueProfBB = BasicBlock::Create(Ctx, "continue_prof", Wrapper);
     BasicBlock *UpdateBestBB = BasicBlock::Create(Ctx, "update_best", Wrapper);
@@ -330,8 +330,8 @@ Function *SimpleAdaptivePassImpl::createOptimizedDispatchWrapper(FunctionMetadat
         Value *StartTime = Builder.CreateCall(Rdtsc);
         
         // Debug message
-        // Value *FormatStr = Builder.CreateGlobalStringPtr("[PROFILING] %s: Call %d, using version %d\n");
-        // Builder.CreateCall(Printf, {FormatStr, FuncName, NewCount, Version});
+        Value *FormatStr = Builder.CreateGlobalStringPtr("[PROFILING] %s: Call %d, using version %d\n");
+        Builder.CreateCall(Printf, {FormatStr, FuncName, NewCount, Version});
         
         // Call version
         std::vector<Value *> Args;
@@ -527,7 +527,7 @@ void SimpleAdaptivePassImpl::createInitializationFunction(Module &M)
     // Print initialization message
     FunctionType *PrintfType = FunctionType::get(Type::getInt32Ty(Ctx), 
                                                 {PointerType::get(Type::getInt8Ty(Ctx), 0)}, true);
-    FunctionCallee Printf = M.getOrInsertFunction("printf", PrintfType);
+    // FunctionCallee Printf = M.getOrInsertFunction("printf", PrintfType);
     // Value *InitMsg = Builder.CreateGlobalStringPtr("[INIT] Adaptive dispatcher initialized\n");
     // Builder.CreateCall(Printf, {InitMsg});
     Builder.CreateRetVoid();
