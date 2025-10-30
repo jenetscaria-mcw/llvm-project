@@ -256,7 +256,7 @@ namespace llvm
 		Builder.SetInsertPoint(ProfPhaseBB);
 		Value *Version = Builder.CreateURem(Count, ConstantInt::get(Type::getInt32Ty(Ctx), 2));
 
-		Value *ShouldUpdateBest = Builder.CreateICmpEQ(NewCount, ConstantInt::get(Type::getInt32Ty(Ctx), 101));   // Best version should be used from 101st run
+		Value *ShouldUpdateBest = Builder.CreateICmpEQ(NewCount, ConstantInt::get(Type::getInt32Ty(Ctx), 6));   // Best version should be used from 101st run
 
 		BasicBlock *ContinueProfBB = BasicBlock::Create(Ctx, "continue_prof", Wrapper);
 		BasicBlock *UpdateBestBB = BasicBlock::Create(Ctx, "update_best", Wrapper);
@@ -359,7 +359,7 @@ namespace llvm
 			Builder.CreateCall(Printf, {Msg, BestVersion});
 
 			// ADD: Measure cycles for this best version call too
-			Value *BestStartTime = Builder.CreateCall(Rdtsc);
+			// Value *BestStartTime = Builder.CreateCall(Rdtsc);
 			
 			// Dispatch to best version now
 			Value *IsBestVersion1 = Builder.CreateICmpEQ(BestVersion, ConstantInt::get(Type::getInt32Ty(Ctx), 1));
@@ -379,11 +379,11 @@ namespace llvm
 				Result = Builder.CreateCall(Orig->getFunctionType(), FuncPtr, Args);
 			}
 
-			// ADD: Measure best version cycles
-			Value *BestEndTime = Builder.CreateCall(Rdtsc);
-			Value *BestElapsed = Builder.CreateSub(BestEndTime, BestStartTime);
-			Value *BestCycleMsg = Builder.CreateGlobalStringPtr("[BEST_CYCLES] Best version call took %lu cycles\n");
-			Builder.CreateCall(Printf, {BestCycleMsg, BestElapsed});
+			// // ADD: Measure best version cycles
+			// Value *BestEndTime = Builder.CreateCall(Rdtsc);
+			// Value *BestElapsed = Builder.CreateSub(BestEndTime, BestStartTime);
+			// Value *BestCycleMsg = Builder.CreateGlobalStringPtr("[BEST_CYCLES] Best version call took %lu cycles\n");
+			// Builder.CreateCall(Printf, {BestCycleMsg, BestElapsed});
 
 			if (Orig->getReturnType()->isVoidTy()) {
 				Builder.CreateRetVoid();
@@ -397,8 +397,8 @@ namespace llvm
 		{
 			Value *BestVersion = Builder.CreateLoad(Type::getInt32Ty(Ctx), metadata.bestVersion);
 			
-			// ADD: Measure cycles in optimal phase
-			Value *OptimalStartTime = Builder.CreateCall(Rdtsc);
+			// // ADD: Measure cycles in optimal phase
+			// Value *OptimalStartTime = Builder.CreateCall(Rdtsc);
 			
 			// ADDED: Print current run counts and cycles in optimal phase
 			Value *V0Cycles = Builder.CreateLoad(Type::getInt64Ty(Ctx), metadata.cpuCycles[0]);
@@ -435,10 +435,10 @@ namespace llvm
 			}
 
 			// ADD: Measure optimal phase cycles
-			Value *OptimalEndTime = Builder.CreateCall(Rdtsc);
-			Value *OptimalElapsed = Builder.CreateSub(OptimalEndTime, OptimalStartTime);
-			Value *OptimalCycleMsg = Builder.CreateGlobalStringPtr("[OPTIMAL_CYCLES] Call took %lu cycles\n");
-			Builder.CreateCall(Printf, {OptimalCycleMsg, OptimalElapsed});
+			// Value *OptimalEndTime = Builder.CreateCall(Rdtsc);
+			// Value *OptimalElapsed = Builder.CreateSub(OptimalEndTime, OptimalStartTime);
+			// Value *OptimalCycleMsg = Builder.CreateGlobalStringPtr("[OPTIMAL_CYCLES] Call took %lu cycles\n");
+			// Builder.CreateCall(Printf, {OptimalCycleMsg, OptimalElapsed});
 
 			if (Orig->getReturnType()->isVoidTy()) {
 				Builder.CreateRetVoid();
