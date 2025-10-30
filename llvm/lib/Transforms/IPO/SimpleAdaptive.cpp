@@ -330,8 +330,8 @@ Function *SimpleAdaptivePassImpl::createOptimizedDispatchWrapper(FunctionMetadat
         Value *StartTime = Builder.CreateCall(Rdtsc);
         
         // Debug message
-        Value *FormatStr = Builder.CreateGlobalStringPtr("[PROFILING] %s: Call %d, using version %d\n");
-        Builder.CreateCall(Printf, {FormatStr, FuncName, NewCount, Version});
+        // Value *FormatStr = Builder.CreateGlobalStringPtr("[PROFILING] %s: Call %d, using version %d\n");
+        // Builder.CreateCall(Printf, {FormatStr, FuncName, NewCount, Version});
         
         // Call version
         std::vector<Value *> Args;
