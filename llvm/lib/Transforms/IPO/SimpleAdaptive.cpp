@@ -169,10 +169,6 @@ Function *SimpleAdaptivePassImpl::createVersion(Function *F, int versionId, Modu
             NewF->addFnAttr("inline-threshold", "100000");
             NewF->addFnAttr("inlinehint-threshold", "50000");
             NewF->addFnAttr("hot-call-site-threshold", "100000");
-            NewF->addFnAttr("unsafe-fp-math", "true");
-            NewF->addFnAttr("no-nans-fp-math", "true");
-            NewF->addFnAttr("no-infs-fp-math", "true");
-            NewF->addFnAttr("approx-func-fp-math", "true");
             NewF->addFnAttr(Attribute::NoRecurse);
             NewF->addFnAttr(Attribute::NoUnwind);
             // errs() << "  V3: Maximum Aggressive (inline + fast-math)\n";
@@ -187,7 +183,7 @@ Function *SimpleAdaptivePassImpl::createVersion(Function *F, int versionId, Modu
             NewF->addFnAttr("select-optimize", "true");
             // errs() << "  V4: Branch Optimized (predictable branches)\n";
             break;
-        case 5:  // HYBRID - Best of Multiple Optimizations
+        case 5:  // Math optimizations
             NewF->addFnAttr("unsafe-fp-math", "true");
             NewF->addFnAttr("no-nans-fp-math", "true");
             NewF->addFnAttr("no-infs-fp-math", "true");
