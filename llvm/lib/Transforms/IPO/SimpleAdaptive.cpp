@@ -244,7 +244,7 @@ Function *SimpleAdaptivePassImpl::createOptimizedDispatchWrapper(FunctionMetadat
     Type *i8PtrTy = PointerType::get(Type::getInt8Ty(Ctx), 0);
 
     const int NUM_VERSIONS = 6;
-    const int PROFILING_CALLS = 600;
+    const int PROFILING_CALLS = 36;
 
     ConstantInt *zero32 = cast<ConstantInt>(ConstantInt::get(i32Ty, 0));
     ConstantInt *one32 = cast<ConstantInt>(ConstantInt::get(i32Ty, 1));
@@ -294,6 +294,11 @@ Function *SimpleAdaptivePassImpl::createOptimizedDispatchWrapper(FunctionMetadat
 
     Builder.SetInsertPoint(ContinueProfBB);
     {
+        // Print version info for EVERY call
+        Value *VersionInfoMsg = Builder.CreateGlobalStringPtr(
+            "[CALL_INFO] %s - Call %d: Using version %d\n");
+        Builder.CreateCall(Printf, {VersionInfoMsg, FuncName, NewCount, Version});
+
         // Create function pointers for all versions
         std::vector<Value *> VersionFuncs;
         for (int i = 0; i < NUM_VERSIONS; i++)
@@ -311,10 +316,6 @@ Function *SimpleAdaptivePassImpl::createOptimizedDispatchWrapper(FunctionMetadat
 
         // Measure cycles before calling
         Value *StartTime = Builder.CreateCall(Rdtsc);
-
-        // Debug message
-        Value *FormatStr = Builder.CreateGlobalStringPtr("[PROFILING] %s: Call %d, using version %d\n");
-        Builder.CreateCall(Printf, {FormatStr, FuncName, NewCount, Version});
 
         // Call version
         std::vector<Value *> Args;
@@ -335,6 +336,68 @@ Function *SimpleAdaptivePassImpl::createOptimizedDispatchWrapper(FunctionMetadat
         // Measure end time and calculate cycles
         Value *EndTime = Builder.CreateCall(Rdtsc);
         Value *ElapsedCycles = Builder.CreateSub(EndTime, StartTime);
+
+        // Print detailed statistics for V0 and V1 for every run
+        Value *IsV0 = Builder.CreateICmpEQ(Version, zero32);
+        Value *IsV1 = Builder.CreateICmpEQ(Version, ConstantInt::get(i32Ty, 1));
+        
+        // Print V0 stats
+        BasicBlock *PrintV0StatsBB = BasicBlock::Create(Ctx, "print_v0_stats", Wrapper);
+        BasicBlock *AfterV0StatsBB = BasicBlock::Create(Ctx, "after_v0_stats", Wrapper);
+        Builder.CreateCondBr(IsV0, PrintV0StatsBB, AfterV0StatsBB);
+        
+        Builder.SetInsertPoint(PrintV0StatsBB);
+        {
+            // Load current V0 run count and total cycles before update
+            LoadInst *CurrentV0Runs = Builder.CreateLoad(i32Ty, metadata.runCount[0]);
+            CurrentV0Runs->setAtomic(AtomicOrdering::Acquire);
+            CurrentV0Runs->setAlignment(Align(4));
+            
+            LoadInst *CurrentV0Cycles = Builder.CreateLoad(i64Ty, metadata.cpuCycles[0]);
+            CurrentV0Cycles->setAtomic(AtomicOrdering::Acquire);
+            CurrentV0Cycles->setAlignment(Align(8));
+            
+            // Calculate new totals
+            Value *NewV0Runs = Builder.CreateAdd(CurrentV0Runs, one32);
+            Value *NewV0Cycles = Builder.CreateAdd(CurrentV0Cycles, ElapsedCycles);
+            
+            // Print V0 statistics
+            Value *V0StatsMsg = Builder.CreateGlobalStringPtr(
+                "[V0_STATS] %s - Call %d: current_run_cycles=%lu, run_count=%d, total_cycles=%lu\n");
+            Builder.CreateCall(Printf, {V0StatsMsg, FuncName, NewCount, ElapsedCycles, NewV0Runs, NewV0Cycles});
+        }
+        Builder.CreateBr(AfterV0StatsBB);
+        
+        Builder.SetInsertPoint(AfterV0StatsBB);
+        
+        // Print V1 stats
+        BasicBlock *PrintV1StatsBB = BasicBlock::Create(Ctx, "print_v1_stats", Wrapper);
+        BasicBlock *AfterV1StatsBB = BasicBlock::Create(Ctx, "after_v1_stats", Wrapper);
+        Builder.CreateCondBr(IsV1, PrintV1StatsBB, AfterV1StatsBB);
+        
+        Builder.SetInsertPoint(PrintV1StatsBB);
+        {
+            // Load current V1 run count and total cycles before update
+            LoadInst *CurrentV1Runs = Builder.CreateLoad(i32Ty, metadata.runCount[1]);
+            CurrentV1Runs->setAtomic(AtomicOrdering::Acquire);
+            CurrentV1Runs->setAlignment(Align(4));
+            
+            LoadInst *CurrentV1Cycles = Builder.CreateLoad(i64Ty, metadata.cpuCycles[1]);
+            CurrentV1Cycles->setAtomic(AtomicOrdering::Acquire);
+            CurrentV1Cycles->setAlignment(Align(8));
+            
+            // Calculate new totals
+            Value *NewV1Runs = Builder.CreateAdd(CurrentV1Runs, one32);
+            Value *NewV1Cycles = Builder.CreateAdd(CurrentV1Cycles, ElapsedCycles);
+            
+            // Print V1 statistics
+            Value *V1StatsMsg = Builder.CreateGlobalStringPtr(
+                "[V1_STATS] %s - Call %d: current_run_cycles=%lu, run_count=%d, total_cycles=%lu\n");
+            Builder.CreateCall(Printf, {V1StatsMsg, FuncName, NewCount, ElapsedCycles, NewV1Runs, NewV1Cycles});
+        }
+        Builder.CreateBr(AfterV1StatsBB);
+        
+        Builder.SetInsertPoint(AfterV1StatsBB);
 
         // Use atomic operations to update only the called version
         for (int i = 0; i < NUM_VERSIONS; i++)
@@ -359,7 +422,6 @@ Function *SimpleAdaptivePassImpl::createOptimizedDispatchWrapper(FunctionMetadat
             Builder.SetInsertPoint(SkipUpdateBB);
         }
 
-
         if (Orig->getReturnType()->isVoidTy())
         {
             Builder.CreateRetVoid();
@@ -372,6 +434,11 @@ Function *SimpleAdaptivePassImpl::createOptimizedDispatchWrapper(FunctionMetadat
 
     Builder.SetInsertPoint(UpdateBestBB);
     {
+        // Print profiling completion message
+        Value *ProfCompleteMsg = Builder.CreateGlobalStringPtr(
+            "\n=== PROFILING COMPLETE FOR %s ===\n");
+        Builder.CreateCall(Printf, {ProfCompleteMsg, FuncName});
+
         // Load all version data with atomic loads
         std::vector<Value *> CurrentCycles;
         std::vector<Value *> CurrentRuns;
@@ -393,6 +460,11 @@ Function *SimpleAdaptivePassImpl::createOptimizedDispatchWrapper(FunctionMetadat
         Value *BestVersion = zero32;
         Value *BestAvg = nullptr;
 
+        // Print header for final statistics
+        Value *FinalStatsHeader = Builder.CreateGlobalStringPtr(
+            "--- FINAL STATISTICS FOR ALL VERSIONS ---\n");
+        Builder.CreateCall(Printf, {FinalStatsHeader});
+
         for (int i = 0; i < NUM_VERSIONS; i++)
         {
             Value *Runs64 = Builder.CreateZExt(CurrentRuns[i], i64Ty);
@@ -402,6 +474,7 @@ Function *SimpleAdaptivePassImpl::createOptimizedDispatchWrapper(FunctionMetadat
             if (i == 0)
             {
                 BestAvg = Avg;
+                BestVersion = zero32;
             }
             else
             {
@@ -410,13 +483,22 @@ Function *SimpleAdaptivePassImpl::createOptimizedDispatchWrapper(FunctionMetadat
                 BestAvg = Builder.CreateSelect(IsBetter, Avg, BestAvg);
             }
 
-            // Print statistics for each version
+            // Print final statistics for ALL versions
             Value *StatsMsg = Builder.CreateGlobalStringPtr(
-                "[STATS] %s - V%d: total_cycles=%lu, runs=%d, avg=%lu\n");
-            Builder.CreateCall(Printf, {StatsMsg, FuncName,
+                "V%d: total_cycles=%lu, runs=%d, avg_cycles=%lu\n");
+            Builder.CreateCall(Printf, {StatsMsg, 
                                         ConstantInt::get(i32Ty, i),
                                         CurrentCycles[i], CurrentRuns[i], AvgCycles[i]});
         }
+
+        // Print best version selection
+        Value *BestVersionMsg = Builder.CreateGlobalStringPtr(
+            "\n[BEST_VERSION] %s - Selected V%d as optimal (avg_cycles=%lu)\n");
+        Builder.CreateCall(Printf, {BestVersionMsg, FuncName, BestVersion, BestAvg});
+
+        Value *PhaseTransitionMsg = Builder.CreateGlobalStringPtr(
+            "Switching to optimal phase...\n\n");
+        Builder.CreateCall(Printf, {PhaseTransitionMsg});
 
         // Atomic store of best version
         StoreInst *BestStore = Builder.CreateStore(BestVersion, metadata.bestVersion);
@@ -476,9 +558,9 @@ Function *SimpleAdaptivePassImpl::createOptimizedDispatchWrapper(FunctionMetadat
         BestLoad->setAlignment(Align(4));
         Value *BestVersion = BestLoad;
         
-        // Print current statistics
+        // Print optimal phase usage
         Value *OptimalStatsMsg = Builder.CreateGlobalStringPtr(
-            "[OPTIMAL] %s - Using best version %d\n");
+            "[OPTIMAL] %s - Using best version V%d\n");
         Builder.CreateCall(Printf, {OptimalStatsMsg, FuncName, BestVersion});
 
         // Create function pointer selection for best version
