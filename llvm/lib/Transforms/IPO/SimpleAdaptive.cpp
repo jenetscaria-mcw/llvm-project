@@ -53,7 +53,6 @@ namespace llvm
         Function *createOptimizedDispatchWrapper(FunctionMetadata &metadata, Module &M);
         Function *createThinDispatcher(FunctionMetadata &metadata, Module &M);
         void createInitializationFunction(Module &M);
-        void createPatchingFunction(FunctionMetadata &metadata, Module &M);
 
     public:
         SimpleAdaptivePassImpl() {}
@@ -313,9 +312,6 @@ namespace llvm
         metadata.functionPtr->setInitializer(
             ConstantExpr::getPointerCast(metadata.wrapper,
                                          metadata.original->getFunctionType()->getPointerTo()));
-        
-        // Create the patching function for this adaptive function
-        createPatchingFunction(metadata, M);
 
         // Replace all uses with the dispatcher
         F->replaceAllUsesWith(metadata.dispatcher);
@@ -331,74 +327,6 @@ namespace llvm
         errs() << metadata.dispatcher->getName().str() << "\n";
 
         functionMap[F] = metadata;
-    }
-
-    // NEW: Create a function that patches the function pointer when transitioning to optimal
-    void SimpleAdaptivePassImpl::createPatchingFunction(FunctionMetadata &metadata, Module &M)
-    {
-        LLVMContext &Ctx = M.getContext();
-        Type *i32Ty = Type::getInt32Ty(Ctx);
-
-        // Create patch function
-        FunctionType *PatchType = FunctionType::get(Type::getVoidTy(Ctx), {}, false);
-        Function *PatchFunc = Function::Create(
-            PatchType, GlobalValue::InternalLinkage,
-            metadata.original->getName().str() + "_patch_to_optimal", &M);
-
-        errs() << PatchFunc->getName().str() << "\n";
-
-        BasicBlock *Entry = BasicBlock::Create(Ctx, "entry", PatchFunc);
-        IRBuilder<> Builder(Entry);
-
-        // Get printf for debugging
-        FunctionType *PrintfType = FunctionType::get(i32Ty,
-                                                     {PointerType::get(Type::getInt8Ty(Ctx), 0)}, true);
-        FunctionCallee Printf = M.getOrInsertFunction("printf", PrintfType);
-
-        // Load best version
-        LoadInst *BestLoad = Builder.CreateLoad(i32Ty, metadata.bestVersion);
-        BestLoad->setAtomic(AtomicOrdering::Acquire);
-        BestLoad->setAlignment(Align(4));
-
-        // Create switch to select the best version
-        BasicBlock *DefaultBB = BasicBlock::Create(Ctx, "default", PatchFunc);
-        SwitchInst *VersionSwitch = Builder.CreateSwitch(BestLoad, DefaultBB, 6);
-
-        for (int i = 0; i < 6; i++)
-        {
-            BasicBlock *VersionBB = BasicBlock::Create(Ctx,
-                                                       "patch_v" + std::to_string(i), PatchFunc);
-            VersionSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, i)), VersionBB);
-
-            Builder.SetInsertPoint(VersionBB);
-
-            // Store the best version's function pointer directly
-            Value *VersionPtr = Builder.CreatePointerCast(
-                metadata.versions[i],
-                metadata.original->getFunctionType()->getPointerTo());
-
-            StoreInst *PatchStore = Builder.CreateStore(VersionPtr, metadata.functionPtr);
-            PatchStore->setAtomic(AtomicOrdering::Release);
-            PatchStore->setAlignment(Align(8));
-
-            // Print patch message
-            Value *PatchMsg = Builder.CreateGlobalStringPtr(
-                "[PATCH] %s - Function pointer patched to V%d, wrapper bypassed! %s\n");
-            Value *FuncName = Builder.CreateGlobalStringPtr(metadata.original->getName().str());
-            Value *FuncName_1 = Builder.CreateGlobalStringPtr(metadata.functionPtr->getName().str());
-            Builder.CreateCall(Printf, {PatchMsg, FuncName, ConstantInt::get(i32Ty, i), FuncName_1});
-
-            Builder.CreateRetVoid();
-        }
-
-        // Default case (shouldn't happen)
-        Builder.SetInsertPoint(DefaultBB);
-        Builder.CreateRetVoid();
-
-        // Export this function so it can be called when transitioning to optimal
-        metadata.wrapper->getParent()->getOrInsertGlobal(
-            metadata.original->getName().str() + "_patch_func",
-            PatchFunc->getType());
     }
 
     Function *SimpleAdaptivePassImpl::createOptimizedDispatchWrapper(FunctionMetadata &metadata, Module &M)
@@ -803,9 +731,9 @@ namespace llvm
                 PatchStore->setAtomic(AtomicOrdering::Release);
                 PatchStore->setAlignment(Align(8));
 
-                // Print patch message
+                // Print patch message  
                 Value *PatchMsg = Builder.CreateGlobalStringPtr(
-                    "[OPTIMAL] %s - Patched to V%d! Future calls bypass wrapper completely.\n");
+                    "[PATCH] %s - Function pointer patched to V%d, wrapper bypassed!\n");
                 Builder.CreateCall(Printf, {PatchMsg, FuncName, ConstantInt::get(i32Ty, i)});
 
                 Builder.CreateBr(PatchDoneBB);
