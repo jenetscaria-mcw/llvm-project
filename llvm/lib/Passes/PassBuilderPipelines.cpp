@@ -1209,7 +1209,6 @@ PassBuilder::buildModuleSimplificationPipeline(OptimizationLevel Level,
   if (EnablePGOForceFunctionAttrs && PGOOpt)
     MPM.addPass(PGOForceFunctionAttrsPass(PGOOpt->ColdOptType));
 
-  MPM.addPass(SimpleAdaptivePass());
   MPM.addPass(AlwaysInlinerPass(/*InsertLifetimeIntrinsics=*/true));
 
   if (EnableModuleInliner)
@@ -1220,6 +1219,8 @@ PassBuilder::buildModuleSimplificationPipeline(OptimizationLevel Level,
   // Remove any dead arguments exposed by cleanups, constant folding globals,
   // and argument promotion.
   MPM.addPass(DeadArgumentEliminationPass());
+
+  MPM.addPass(SimpleAdaptivePass());
 
   MPM.addPass(CoroCleanupPass());
 
