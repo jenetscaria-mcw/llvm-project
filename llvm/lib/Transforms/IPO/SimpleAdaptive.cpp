@@ -135,17 +135,16 @@ namespace llvm
             ConstantInt::get(i32Ty, 0), sampleCounterName);
         metadata.sampleCounter->setAlignment(Align(4));
 
-        auto *ptrToFuncTy = PointerType::get(funcPtrTy, 0);   // i.e. T*
+        auto *ptrToFuncTy = PointerType::get(funcPtrTy, 0); // i.e. T*
         auto *nullFuncPtr = ConstantPointerNull::get(ptrToFuncTy);
 
         metadata.functionPtr = new GlobalVariable(
             M,
-            ptrToFuncTy,                       // The type of the global var
+            ptrToFuncTy, // The type of the global var
             false,
             GlobalValue::InternalLinkage,
-            nullFuncPtr,                       // initializer
-            funcPtrName
-        );
+            nullFuncPtr, // initializer
+            funcPtrName);
 
         metadata.functionPtr->setAlignment(Align(8));
 
@@ -187,67 +186,67 @@ namespace llvm
         Function *NewF = CloneFunction(F, VMap);
         NewF->setName(F->getName() + "_v" + std::to_string(versionId));
         NewF->setLinkage(GlobalValue::InternalLinkage);
-        
+
         LLVMContext &Ctx = M.getContext();
-        
+
         switch (versionId)
         {
         case 0: // BASELINE - No optimizations
             NewF->addFnAttr(Attribute::OptimizeNone);
             NewF->addFnAttr(Attribute::NoInline);
             break;
-            
+
         case 1: // VECTORIZED - Force vectorization
             NewF->addFnAttr("target-features", "+avx2,+fma");
-            NewF->addFnAttr("target-cpu", "haswell");
+            // NewF->addFnAttr("target-cpu", "haswell");
             // Add loop metadata for vectorization
-            for (BasicBlock &BB : *NewF) {
-                for (Instruction &I : BB) {
-                    if (auto *Loop = dyn_cast<BranchInst>(&I)) {
+            for (BasicBlock &BB : *NewF)
+            {
+                for (Instruction &I : BB)
+                {
+                    if (auto *Loop = dyn_cast<BranchInst>(&I))
+                    {
                         // Add vectorization metadata to loops
-                        MDNode *VecMD = MDNode::get(Ctx, {
-                            MDString::get(Ctx, "llvm.loop.vectorize.enable"),
-                            ConstantAsMetadata::get(ConstantInt::get(Type::getInt1Ty(Ctx), 1))
-                        });
-                        MDNode *WidthMD = MDNode::get(Ctx, {
-                            MDString::get(Ctx, "llvm.loop.vectorize.width"),
-                            ConstantAsMetadata::get(ConstantInt::get(Type::getInt32Ty(Ctx), 8))
-                        });
+                        MDNode *VecMD = MDNode::get(Ctx, {MDString::get(Ctx, "llvm.loop.vectorize.enable"),
+                                                          ConstantAsMetadata::get(ConstantInt::get(Type::getInt1Ty(Ctx), 1))});
+                        MDNode *WidthMD = MDNode::get(Ctx, {MDString::get(Ctx, "llvm.loop.vectorize.width"),
+                                                            ConstantAsMetadata::get(ConstantInt::get(Type::getInt32Ty(Ctx), 8))});
                         MDNode *LoopMD = MDNode::get(Ctx, {MDString::get(Ctx, "llvm.loop"), VecMD, WidthMD});
                         I.setMetadata("llvm.loop", LoopMD);
                     }
                 }
             }
             break;
-            
+
         case 2: // LOOP OPTIMIZED - Aggressive unrolling
-            NewF->addFnAttr("target-cpu", "native");
+            // NewF->addFnAttr("target-cpu", "native");
             // Add unroll metadata to all loops
-            for (Function::iterator BB = NewF->begin(); BB != NewF->end(); ++BB) {
-                if (BranchInst *BI = dyn_cast<BranchInst>(BB->getTerminator())) {
-                    MDNode *UnrollMD = MDNode::get(Ctx, {
-                        MDString::get(Ctx, "llvm.loop.unroll.enable"),
-                        ConstantAsMetadata::get(ConstantInt::get(Type::getInt1Ty(Ctx), 1))
-                    });
-                    MDNode *UnrollCount = MDNode::get(Ctx, {
-                        MDString::get(Ctx, "llvm.loop.unroll.count"),
-                        ConstantAsMetadata::get(ConstantInt::get(Type::getInt32Ty(Ctx), 8))
-                    });
+            for (Function::iterator BB = NewF->begin(); BB != NewF->end(); ++BB)
+            {
+                if (BranchInst *BI = dyn_cast<BranchInst>(BB->getTerminator()))
+                {
+                    MDNode *UnrollMD = MDNode::get(Ctx, {MDString::get(Ctx, "llvm.loop.unroll.enable"),
+                                                         ConstantAsMetadata::get(ConstantInt::get(Type::getInt1Ty(Ctx), 1))});
+                    MDNode *UnrollCount = MDNode::get(Ctx, {MDString::get(Ctx, "llvm.loop.unroll.count"),
+                                                            ConstantAsMetadata::get(ConstantInt::get(Type::getInt32Ty(Ctx), 8))});
                     MDNode *LoopMD = MDNode::get(Ctx, {MDString::get(Ctx, "llvm.loop"), UnrollMD, UnrollCount});
                     BI->setMetadata("llvm.loop", LoopMD);
                 }
             }
             break;
-            
+
         case 3: // FAST MATH - Aggressive FP optimizations
             NewF->addFnAttr("unsafe-fp-math", "true");
-            NewF->addFnAttr("no-nans-fp-math", "true");  
+            NewF->addFnAttr("no-nans-fp-math", "true");
             NewF->addFnAttr("no-infs-fp-math", "true");
             NewF->addFnAttr("no-signed-zeros-fp-math", "true");
             // Set fast math flags on all FP instructions
-            for (BasicBlock &BB : *NewF) {
-                for (Instruction &I : BB) {
-                    if (I.getType()->isFloatingPointTy()) {
+            for (BasicBlock &BB : *NewF)
+            {
+                for (Instruction &I : BB)
+                {
+                    if (I.getType()->isFloatingPointTy())
+                    {
                         FastMathFlags FMF;
                         FMF.setFast(true);
                         I.setFastMathFlags(FMF);
@@ -255,33 +254,38 @@ namespace llvm
                 }
             }
             break;
-            
+
         case 4: // SIZE OPTIMIZED - Prefer smaller code
             NewF->addFnAttr(Attribute::OptimizeForSize);
             NewF->addFnAttr(Attribute::MinSize);
             // Disable unrolling and inlining
-            for (Function::iterator BB = NewF->begin(); BB != NewF->end(); ++BB) {
-                if (BranchInst *BI = dyn_cast<BranchInst>(BB->getTerminator())) {
-                    MDNode *UnrollMD = MDNode::get(Ctx, {
-                        MDString::get(Ctx, "llvm.loop.unroll.disable"),
-                        ConstantAsMetadata::get(ConstantInt::get(Type::getInt1Ty(Ctx), 1))
-                    });
+            for (Function::iterator BB = NewF->begin(); BB != NewF->end(); ++BB)
+            {
+                if (BranchInst *BI = dyn_cast<BranchInst>(BB->getTerminator()))
+                {
+                    MDNode *UnrollMD = MDNode::get(Ctx, {MDString::get(Ctx, "llvm.loop.unroll.disable"),
+                                                         ConstantAsMetadata::get(ConstantInt::get(Type::getInt1Ty(Ctx), 1))});
                     MDNode *LoopMD = MDNode::get(Ctx, {MDString::get(Ctx, "llvm.loop"), UnrollMD});
                     BI->setMetadata("llvm.loop", LoopMD);
                 }
             }
             break;
-            
+
         case 5: // AGGRESSIVE INLINE
             NewF->addFnAttr(Attribute::AlwaysInline);
             NewF->addFnAttr(Attribute::NoUnwind);
             NewF->addFnAttr(Attribute::NoRecurse);
             // Inline all call instructions in this function
-            for (BasicBlock &BB : *NewF) {
-                for (Instruction &I : BB) {
-                    if (CallInst *CI = dyn_cast<CallInst>(&I)) {
-                        if (Function *Callee = CI->getCalledFunction()) {
-                            if (!Callee->isDeclaration()) {
+            for (BasicBlock &BB : *NewF)
+            {
+                for (Instruction &I : BB)
+                {
+                    if (CallInst *CI = dyn_cast<CallInst>(&I))
+                    {
+                        if (Function *Callee = CI->getCalledFunction())
+                        {
+                            if (!Callee->isDeclaration())
+                            {
                                 Callee->addFnAttr(Attribute::AlwaysInline);
                             }
                         }
@@ -290,7 +294,7 @@ namespace llvm
             }
             break;
         }
-        
+
         return NewF;
     }
 
@@ -309,7 +313,7 @@ namespace llvm
 
         // Mark as always inline for minimal overhead
         Dispatcher->addFnAttr(Attribute::AlwaysInline);
-        //Dispatcher->setLinkage(GlobalValue::InternalLinkage);
+        // Dispatcher->setLinkage(GlobalValue::InternalLinkage);
 
         BasicBlock *Entry = BasicBlock::Create(Ctx, "entry", Dispatcher);
         IRBuilder<> Builder(Entry);
@@ -375,7 +379,6 @@ namespace llvm
 
         F->setName(funcName + "_original");
         F->setLinkage(GlobalValue::InternalLinkage);
-
 
         errs() << F->getName().str() << "\n";
         errs() << metadata.wrapper->getName().str() << "\n";
@@ -463,17 +466,37 @@ namespace llvm
         // Transition to Profiling
         Builder.SetInsertPoint(TransitionToProfilingBB);
         {
+            // RACE CONDITION FIX: Use atomic CAS to ensure only ONE thread performs transition
+            BasicBlock *DoWarmupTransitionBB = BasicBlock::Create(Ctx, "do_warmup_transition", Wrapper);
+            BasicBlock *AlreadyInProfilingBB = BasicBlock::Create(Ctx, "already_in_profiling", Wrapper);
+            
+            // Attempt atomic compare-exchange: if currentPhase == 0, set it to 1
+            AtomicCmpXchgInst *CASWarmup = Builder.CreateAtomicCmpXchg(
+                metadata.currentPhase, zero32, one32,
+                MaybeAlign(4), 
+                AtomicOrdering::SequentiallyConsistent,
+                AtomicOrdering::SequentiallyConsistent);
+            CASWarmup->setWeak(false);  // Strong CAS
+            
+            // Extract the success flag from the result
+            Value *CASWarmupResult = Builder.CreateExtractValue(CASWarmup, 1);
+            Builder.CreateCondBr(CASWarmupResult, DoWarmupTransitionBB, AlreadyInProfilingBB);
+            
+            // If CAS failed, another thread already transitioned - go to profiling
+            Builder.SetInsertPoint(AlreadyInProfilingBB);
+            Builder.CreateBr(ProfilingPhaseBB);
+            
+            // Only the winning thread performs the transition
+            Builder.SetInsertPoint(DoWarmupTransitionBB);
+            
             // Print transition message
             Value *TransMsg = Builder.CreateGlobalStringPtr(
                 "[WARMUP COMPLETE] %s - Transitioning to profiling phase after %d warmup runs\n");
             Builder.CreateCall(Printf, {TransMsg, FuncName, warmupThreshold});
 
-            // Update phase to profiling
-            StoreInst *PhaseStore = Builder.CreateStore(one32, metadata.currentPhase);
-            PhaseStore->setAtomic(AtomicOrdering::Release);
-            PhaseStore->setAlignment(Align(4));
-
-            // Reset counters for profiling phase
+            // Phase already updated by CAS above - no need to update again
+            
+            // Reset counters for profiling phase  
             StoreInst *ResetProfile = Builder.CreateStore(zero32, metadata.profileCounter);
             ResetProfile->setAtomic(AtomicOrdering::Release);
             ResetProfile->setAlignment(Align(4));
@@ -501,22 +524,60 @@ namespace llvm
             // Do Sample Block - measure performance
             Builder.SetInsertPoint(DoSampleBB);
             {
-                // Increment profile counter (only sampled calls)
-                Value *ProfileCount = Builder.CreateAtomicRMW(
-                    AtomicRMWInst::Add, metadata.profileCounter, one32,
-                    MaybeAlign(4), AtomicOrdering::SequentiallyConsistent);
-
-                // Calculate which version to run (round-robin for sampled calls)
-                Value *VersionToProfile = Builder.CreateURem(ProfileCount, ConstantInt::get(i32Ty, NUM_VERSIONS));
-
-                // Store current version being tested
-                StoreInst *VersionStore = Builder.CreateStore(VersionToProfile, metadata.currentVersion);
-                VersionStore->setAtomic(AtomicOrdering::Release);
-                VersionStore->setAlignment(Align(4));
-
-                // Check if profiling is complete
-                Value *IsProfilingComplete = Builder.CreateICmpUGE(ProfileCount, profilingThreshold);
-                Builder.CreateCondBr(IsProfilingComplete, TransitionToOptimalBB, UpdateStatsBB);
+                // Try to find a version that still needs profiling (< 200 runs)
+                // We check versions in order and atomically claim a run
+                
+                BasicBlock *CheckVersionBBs[NUM_VERSIONS];
+                for (int v = 0; v < NUM_VERSIONS; v++)
+                {
+                    CheckVersionBBs[v] = BasicBlock::Create(Ctx, "check_v" + std::to_string(v), Wrapper);
+                }
+                
+                Builder.CreateBr(CheckVersionBBs[0]);
+                
+                // Try each version sequentially
+                for (int v = 0; v < NUM_VERSIONS; v++)
+                {
+                    Builder.SetInsertPoint(CheckVersionBBs[v]);
+                    
+                    // Atomically try to claim a run for this version
+                    Value *OldRunCount = Builder.CreateAtomicRMW(
+                        AtomicRMWInst::Add, metadata.runCount[v], one32,
+                        MaybeAlign(4), AtomicOrdering::SequentiallyConsistent);
+                    
+                    // Check if this version still needs runs (old count < 200)
+                    Value *NeedsRun = Builder.CreateICmpULT(OldRunCount, ConstantInt::get(i32Ty, 200));
+                    
+                    BasicBlock *UseVersionBB = BasicBlock::Create(Ctx, "use_v" + std::to_string(v), Wrapper);
+                    BasicBlock *TryNextBB = (v < NUM_VERSIONS - 1) ? 
+                        CheckVersionBBs[v + 1] : TransitionToOptimalBB;
+                    
+                    Builder.CreateCondBr(NeedsRun, UseVersionBB, TryNextBB);
+                    
+                    // Use this version - store it and profile
+                    Builder.SetInsertPoint(UseVersionBB);
+                    StoreInst *VersionStore = Builder.CreateStore(ConstantInt::get(i32Ty, v), metadata.currentVersion);
+                    VersionStore->setAtomic(AtomicOrdering::Release);
+                    VersionStore->setAlignment(Align(4));
+                    Builder.CreateBr(UpdateStatsBB);
+                    
+                    // Didn't use this version - decrement back
+                    if (v < NUM_VERSIONS - 1)
+                    {
+                        Builder.SetInsertPoint(TryNextBB);
+                        Builder.CreateAtomicRMW(
+                            AtomicRMWInst::Sub, metadata.runCount[v], one32,
+                            MaybeAlign(4), AtomicOrdering::SequentiallyConsistent);
+                    }
+                    else
+                    {
+                        // Last version is also full - decrement and transition
+                        Builder.SetInsertPoint(TransitionToOptimalBB);
+                        Builder.CreateAtomicRMW(
+                            AtomicRMWInst::Sub, metadata.runCount[v], one32,
+                            MaybeAlign(4), AtomicOrdering::SequentiallyConsistent);
+                    }
+                }
             }
 
             // Skip Sample Block - run current best or default version without measurement
@@ -648,12 +709,9 @@ namespace llvm
                 BasicBlock *UpdateVersionBB = BasicBlock::Create(Ctx, "update_v" + std::to_string(i), Wrapper);
                 VersionSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, i)), UpdateVersionBB);
                 Builder.SetInsertPoint(UpdateVersionBB);
-                // Atomic add for cycles
+                // Atomic add for cycles (runCount already incremented in DoSampleBB)
                 Builder.CreateAtomicRMW(AtomicRMWInst::Add, metadata.cpuCycles[i],
                                         ElapsedCycles, MaybeAlign(8), AtomicOrdering::SequentiallyConsistent);
-                // Atomic add for run count
-                Builder.CreateAtomicRMW(AtomicRMWInst::Add, metadata.runCount[i],
-                                        one32, MaybeAlign(4), AtomicOrdering::SequentiallyConsistent);
                 Builder.CreateBr(ContinueBB);
                 UpdateBlocks.push_back(UpdateVersionBB);
             }
@@ -698,6 +756,29 @@ namespace llvm
         // Key change: Transition to Optimal
         Builder.SetInsertPoint(TransitionToOptimalBB);
         {
+            // RACE CONDITION FIX: Use atomic CAS to ensure only ONE thread performs transition
+            BasicBlock *DoTransitionBB = BasicBlock::Create(Ctx, "do_transition", Wrapper);
+            BasicBlock *AlreadyTransitionedBB = BasicBlock::Create(Ctx, "already_transitioned", Wrapper);
+            
+            // Attempt atomic compare-exchange: if currentPhase == 1, set it to 2
+            AtomicCmpXchgInst *CAS = Builder.CreateAtomicCmpXchg(
+                metadata.currentPhase, one32, two32,
+                MaybeAlign(4), 
+                AtomicOrdering::SequentiallyConsistent,
+                AtomicOrdering::SequentiallyConsistent);
+            CAS->setWeak(false);  // Strong CAS
+            
+            // Extract the success flag from the result
+            Value *CASResult = Builder.CreateExtractValue(CAS, 1);
+            Builder.CreateCondBr(CASResult, DoTransitionBB, AlreadyTransitionedBB);
+            
+            // If CAS failed, another thread already transitioned - go to optimal
+            Builder.SetInsertPoint(AlreadyTransitionedBB);
+            Builder.CreateBr(OptimalPhaseBB);
+            
+            // Only the winning thread performs the transition
+            Builder.SetInsertPoint(DoTransitionBB);
+            
             // [Calculate best version as before...]
             // Load all version data
             std::vector<Value *> CurrentCycles;
@@ -759,10 +840,7 @@ namespace llvm
             BestStore->setAtomic(AtomicOrdering::Release);
             BestStore->setAlignment(Align(4));
 
-            // Update phase to optimal
-            StoreInst *PhaseStore = Builder.CreateStore(two32, metadata.currentPhase);
-            PhaseStore->setAtomic(AtomicOrdering::Release);
-            PhaseStore->setAlignment(Align(4));
+            // Phase already updated by CAS above - no need to update again
 
             // Create blocks for each version
             BasicBlock *PatchDoneBB = BasicBlock::Create(Ctx, "patch_done", Wrapper);
@@ -787,7 +865,7 @@ namespace llvm
                 PatchStore->setAtomic(AtomicOrdering::Release);
                 PatchStore->setAlignment(Align(8));
 
-                // Print patch message  
+                // Print patch message
                 Value *PatchMsg = Builder.CreateGlobalStringPtr(
                     "[PATCH] %s - Function pointer patched to V%d, wrapper bypassed!\n");
                 Builder.CreateCall(Printf, {PatchMsg, FuncName, ConstantInt::get(i32Ty, i)});
