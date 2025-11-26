@@ -25,9 +25,7 @@ namespace llvm
         Function *original;
         Function *versions[6]; // v0 to v5
         Function *wrapper;
-        Function *dispatcher; // NEW: Thin dispatcher function
-        uint32_t functionId;
-        FunctionType *signature;
+        Function *dispatcher; // Dispatcher function
 
         // Per-function static globals for adaptive runtime tracking
         GlobalVariable *callCounter;    // total call count
@@ -39,7 +37,7 @@ namespace llvm
         GlobalVariable *currentPhase;   // 0=warmup, 1=profiling, 2=optimal
         GlobalVariable *currentVersion; // current version being tested
         GlobalVariable *sampleCounter;  // counter for sampling
-        GlobalVariable *functionPtr;    // NEW: Function pointer for direct dispatch
+        GlobalVariable *functionPtr;    // Function pointer for direct dispatch either wrapper or best function 
     };
 
     class SimpleAdaptivePassImpl
@@ -192,8 +190,8 @@ namespace llvm
         switch (versionId)
         {
         case 0: // BASELINE - No optimizations
-            NewF->addFnAttr(Attribute::OptimizeNone);
-            NewF->addFnAttr(Attribute::NoInline);
+            //NewF->addFnAttr(Attribute::OptimizeNone);
+            //NewF->addFnAttr(Attribute::NoInline);
             break;
 
         case 1: // VECTORIZED - Force vectorization
@@ -313,7 +311,6 @@ namespace llvm
 
         // Mark as always inline for minimal overhead
         Dispatcher->addFnAttr(Attribute::AlwaysInline);
-        // Dispatcher->setLinkage(GlobalValue::InternalLinkage);
 
         BasicBlock *Entry = BasicBlock::Create(Ctx, "entry", Dispatcher);
         IRBuilder<> Builder(Entry);
@@ -349,8 +346,6 @@ namespace llvm
     {
         FunctionMetadata metadata;
         metadata.original = F;
-        metadata.functionId = funcId;
-        metadata.signature = F->getFunctionType();
         auto funcName = F->getName().str();
 
         // Create versions
@@ -393,7 +388,7 @@ namespace llvm
         LLVMContext &Ctx = M.getContext();
         Function *Orig = metadata.original;
 
-        // Create wrapper function (internal, not exposed)
+        // Create wrapper function 
         Function *Wrapper = Function::Create(
             Orig->getFunctionType(),
             GlobalValue::InternalLinkage, // Internal linkage
@@ -419,7 +414,7 @@ namespace llvm
         ConstantInt *zero32 = cast<ConstantInt>(ConstantInt::get(i32Ty, 0));
         ConstantInt *one32 = cast<ConstantInt>(ConstantInt::get(i32Ty, 1));
         ConstantInt *two32 = cast<ConstantInt>(ConstantInt::get(i32Ty, 2));
-        ConstantInt *warmupThreshold = cast<ConstantInt>(ConstantInt::get(i32Ty, WARMUP_RUNS * 6)); // Total warmup runs
+        ConstantInt *warmupThreshold = cast<ConstantInt>(ConstantInt::get(i32Ty, WARMUP_RUNS * 6));
         ConstantInt *profilingThreshold = cast<ConstantInt>(ConstantInt::get(i32Ty, PROFILING_THRESHOLD));
         ConstantInt *sampleRate = cast<ConstantInt>(ConstantInt::get(i32Ty, SAMPLE_RATE));
 
@@ -466,7 +461,7 @@ namespace llvm
         // Transition to Profiling
         Builder.SetInsertPoint(TransitionToProfilingBB);
         {
-            // RACE CONDITION FIX: Use atomic CAS to ensure only ONE thread performs transition
+            // Use atomic CAS to ensure only ONE thread performs transition
             BasicBlock *DoWarmupTransitionBB = BasicBlock::Create(Ctx, "do_warmup_transition", Wrapper);
             BasicBlock *AlreadyInProfilingBB = BasicBlock::Create(Ctx, "already_in_profiling", Wrapper);
             
@@ -525,7 +520,6 @@ namespace llvm
             Builder.SetInsertPoint(DoSampleBB);
             {
                 // Try to find a version that still needs profiling (< 200 runs)
-                // We check versions in order and atomically claim a run
                 
                 BasicBlock *CheckVersionBBs[NUM_VERSIONS];
                 for (int v = 0; v < NUM_VERSIONS; v++)
@@ -756,7 +750,7 @@ namespace llvm
         // Key change: Transition to Optimal
         Builder.SetInsertPoint(TransitionToOptimalBB);
         {
-            // RACE CONDITION FIX: Use atomic CAS to ensure only ONE thread performs transition
+            // Use atomic CAS to ensure only ONE thread performs transition
             BasicBlock *DoTransitionBB = BasicBlock::Create(Ctx, "do_transition", Wrapper);
             BasicBlock *AlreadyTransitionedBB = BasicBlock::Create(Ctx, "already_transitioned", Wrapper);
             
@@ -778,8 +772,7 @@ namespace llvm
             
             // Only the winning thread performs the transition
             Builder.SetInsertPoint(DoTransitionBB);
-            
-            // [Calculate best version as before...]
+
             // Load all version data
             std::vector<Value *> CurrentCycles;
             std::vector<Value *> CurrentRuns;
@@ -939,11 +932,7 @@ namespace llvm
                                                      {PointerType::get(Type::getInt8Ty(Ctx), 0)}, true);
         FunctionCallee Printf = M.getOrInsertFunction("printf", PrintfType);
         Value *InitMsg = Builder.CreateGlobalStringPtr(
-            "[INIT] Adaptive dispatcher with DIRECT PATCHING initialized:\n"
-            "  - Warmup runs: %d per version (%d total)\n"
-            "  - Sample rate: 1 in %d calls\n"
-            "  - Profiling threshold: %d samples\n"
-            "  - Production mode: DIRECT CALLS (wrapper bypassed)\n");
+            "[INIT] Adaptive dispatcher with DIRECT PATCHING initialized:\n");
         Builder.CreateCall(Printf, {InitMsg,
                                     ConstantInt::get(Type::getInt32Ty(Ctx), WARMUP_RUNS),
                                     ConstantInt::get(Type::getInt32Ty(Ctx), WARMUP_RUNS * 6),
