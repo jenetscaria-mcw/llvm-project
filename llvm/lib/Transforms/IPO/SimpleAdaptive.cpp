@@ -185,111 +185,58 @@ namespace llvm
         NewF->setName(F->getName() + "_v" + std::to_string(versionId));
         NewF->setLinkage(GlobalValue::InternalLinkage);
 
-        LLVMContext &Ctx = M.getContext();
-
         switch (versionId)
         {
-        case 0: // BASELINE - No optimizations
-            //NewF->addFnAttr(Attribute::OptimizeNone);
-            //NewF->addFnAttr(Attribute::NoInline);
+        case 0: // BASELINE - Conservative
+            // errs() << "  V0: Baseline (conservative)\n";
             break;
-
-        case 1: // VECTORIZED - Force vectorization
-            NewF->addFnAttr("target-features", "+avx2,+fma");
-            // NewF->addFnAttr("target-cpu", "haswell");
-            // Add loop metadata for vectorization
-            for (BasicBlock &BB : *NewF)
-            {
-                for (Instruction &I : BB)
-                {
-                    if (auto *Loop = dyn_cast<BranchInst>(&I))
-                    {
-                        // Add vectorization metadata to loops
-                        MDNode *VecMD = MDNode::get(Ctx, {MDString::get(Ctx, "llvm.loop.vectorize.enable"),
-                                                          ConstantAsMetadata::get(ConstantInt::get(Type::getInt1Ty(Ctx), 1))});
-                        MDNode *WidthMD = MDNode::get(Ctx, {MDString::get(Ctx, "llvm.loop.vectorize.width"),
-                                                            ConstantAsMetadata::get(ConstantInt::get(Type::getInt32Ty(Ctx), 8))});
-                        MDNode *LoopMD = MDNode::get(Ctx, {MDString::get(Ctx, "llvm.loop"), VecMD, WidthMD});
-                        I.setMetadata("llvm.loop", LoopMD);
-                    }
-                }
-            }
+        case 1: // VECTORIZED - Maximum SIMD
+            NewF->addFnAttr("prefer-vector-width", "512");
+            NewF->addFnAttr("min-legal-vector-width", "256");
+            NewF->addFnAttr("target-features", "+avx512f,+avx512vl,+avx2,+fma");
+            // NewF->addFnAttr("target-cpu", "skylake-avx512");
+            NewF->addFnAttr("vectorize-predicate", "enable");
+            NewF->addFnAttr("force-vector-width", "8");
+            NewF->addFnAttr("force-vector-interleave", "4");
+            // errs() << "  V1: Maximum Vectorized (AVX512)\n";
             break;
-
-        case 2: // LOOP OPTIMIZED - Aggressive unrolling
-            // NewF->addFnAttr("target-cpu", "native");
-            // Add unroll metadata to all loops
-            for (Function::iterator BB = NewF->begin(); BB != NewF->end(); ++BB)
-            {
-                if (BranchInst *BI = dyn_cast<BranchInst>(BB->getTerminator()))
-                {
-                    MDNode *UnrollMD = MDNode::get(Ctx, {MDString::get(Ctx, "llvm.loop.unroll.enable"),
-                                                         ConstantAsMetadata::get(ConstantInt::get(Type::getInt1Ty(Ctx), 1))});
-                    MDNode *UnrollCount = MDNode::get(Ctx, {MDString::get(Ctx, "llvm.loop.unroll.count"),
-                                                            ConstantAsMetadata::get(ConstantInt::get(Type::getInt32Ty(Ctx), 8))});
-                    MDNode *LoopMD = MDNode::get(Ctx, {MDString::get(Ctx, "llvm.loop"), UnrollMD, UnrollCount});
-                    BI->setMetadata("llvm.loop", LoopMD);
-                }
-            }
+        case 2: // LOOP OPTIMIZED - Aggressive Unrolling
+            NewF->addFnAttr("unroll-threshold", "100000");
+            NewF->addFnAttr("unroll-count", "16");
+            NewF->addFnAttr("unroll-allow-partial", "true");
+            NewF->addFnAttr("unroll-runtime", "true");
+            NewF->addFnAttr("unroll-full-unroll-max", "1024");
+            NewF->addFnAttr("interleave-count", "4");
+            // Branch optimization for loops
+            NewF->addFnAttr("tail-merge-threshold", "2");
+            NewF->addFnAttr("machine-block-placement", "true");
+            // errs() << "  V2: Aggressive Loop Optimized\n";
             break;
-
-        case 3: // FAST MATH - Aggressive FP optimizations
+        case 3: // AGGRESSIVE INLINE - Maximum Inlining
             NewF->addFnAttr("unsafe-fp-math", "true");
             NewF->addFnAttr("no-nans-fp-math", "true");
             NewF->addFnAttr("no-infs-fp-math", "true");
-            NewF->addFnAttr("no-signed-zeros-fp-math", "true");
-            // Set fast math flags on all FP instructions
-            for (BasicBlock &BB : *NewF)
-            {
-                for (Instruction &I : BB)
-                {
-                    if (I.getType()->isFloatingPointTy())
-                    {
-                        FastMathFlags FMF;
-                        FMF.setFast(true);
-                        I.setFastMathFlags(FMF);
-                    }
-                }
-            }
+            NewF->addFnAttr("approx-func-fp-math", "true");
+            // errs() << "  V3: Maximum Aggressive (inline + fast-math)\n";
             break;
-
-        case 4: // SIZE OPTIMIZED - Prefer smaller code
-            NewF->addFnAttr(Attribute::OptimizeForSize);
-            NewF->addFnAttr(Attribute::MinSize);
-            // Disable unrolling and inlining
-            for (Function::iterator BB = NewF->begin(); BB != NewF->end(); ++BB)
-            {
-                if (BranchInst *BI = dyn_cast<BranchInst>(BB->getTerminator()))
-                {
-                    MDNode *UnrollMD = MDNode::get(Ctx, {MDString::get(Ctx, "llvm.loop.unroll.disable"),
-                                                         ConstantAsMetadata::get(ConstantInt::get(Type::getInt1Ty(Ctx), 1))});
-                    MDNode *LoopMD = MDNode::get(Ctx, {MDString::get(Ctx, "llvm.loop"), UnrollMD});
-                    BI->setMetadata("llvm.loop", LoopMD);
-                }
-            }
+        case 4: // BRANCH OPTIMIZED - Control Flow Focus
+            NewF->addFnAttr("branch-weights", "likely");
+            NewF->addFnAttr("profile-likely-prob", "0.9");
+            NewF->addFnAttr("jump-table-density", "10");
+            NewF->addFnAttr("min-jump-table-entries", "4");
+            NewF->addFnAttr("tail-call-opt", "true");
+            NewF->addFnAttr("x86-cmov-converter", "true");
+            NewF->addFnAttr("select-optimize", "true");
+            // errs() << "  V4: Branch Optimized (predictable branches)\n";
             break;
-
-        case 5: // AGGRESSIVE INLINE
+        case 5: // Math optimizations
             NewF->addFnAttr(Attribute::AlwaysInline);
-            NewF->addFnAttr(Attribute::NoUnwind);
+            NewF->addFnAttr("inline-threshold", "100000");
+            NewF->addFnAttr("inlinehint-threshold", "50000");
+            NewF->addFnAttr("hot-call-site-threshold", "100000");
             NewF->addFnAttr(Attribute::NoRecurse);
-            // Inline all call instructions in this function
-            for (BasicBlock &BB : *NewF)
-            {
-                for (Instruction &I : BB)
-                {
-                    if (CallInst *CI = dyn_cast<CallInst>(&I))
-                    {
-                        if (Function *Callee = CI->getCalledFunction())
-                        {
-                            if (!Callee->isDeclaration())
-                            {
-                                Callee->addFnAttr(Attribute::AlwaysInline);
-                            }
-                        }
-                    }
-                }
-            }
+            NewF->addFnAttr(Attribute::NoUnwind);
+            // errs() << "  V5: Math optimizations\n";
             break;
         }
 
