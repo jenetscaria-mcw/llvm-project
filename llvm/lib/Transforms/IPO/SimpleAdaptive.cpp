@@ -26,9 +26,9 @@ namespace llvm
 
     // Function group configurations - UPDATED with your requirements
     static std::map<std::string, FunctionGroupConfig> FUNCTION_GROUPS = {
-        {"HIGH_FREQUENCY", {10, 5, 50000, "Functions with millions of calls"}},
-        {"MEDIUM_FREQUENCY", {10, 2, 1200, "Functions with 10k-1M calls"}},
-        {"LOW_FREQUENCY", {10, 2, 500, "Functions with less than 10k calls"}}
+        {"HIGH_FREQUENCY", {10, 10, 49998, "Functions with millions of calls"}},
+        {"MEDIUM_FREQUENCY", {10, 5, 5010, "Functions with 10k-1M calls"}},
+        {"LOW_FREQUENCY", {10, 2, 510, "Functions with less than 10k calls"}}
     };
 
     // Default configuration
