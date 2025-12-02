@@ -15,10 +15,23 @@ using namespace llvm;
 
 namespace llvm
 {
-    // Configuration constants
-    static constexpr int WARMUP_RUNS = 10;           // Number of warmup runs per version
-    static constexpr int SAMPLE_RATE = 5;            // Sample 1 in N calls during profiling
-    static constexpr int PROFILING_THRESHOLD = 1200; // Total calls needed for profiling (after warmup)
+    struct FunctionGroupConfig {
+        int warmupRuns;
+        int sampleRate;
+        int profilingThreshold;
+        std::string description;
+    };
+    
+    // Function group configurations - UPDATED with your requirements
+    static std::map<std::string, FunctionGroupConfig> FUNCTION_GROUPS = {
+        {"HIGH_FREQUENCY", {10, 10, 49998, "Functions with millions of calls"}},
+        {"MEDIUM_FREQUENCY", {10, 5, 5010, "Functions with 10k-1M calls"}},
+        {"LOW_FREQUENCY", {10, 2, 750, "Functions with less than 10k calls"}}
+    };
+
+    // Default configuration
+    static const FunctionGroupConfig DEFAULT_CONFIG = {10, 2, 1200, "Default configuration"};
+
 
     struct FunctionMetadata
     {
@@ -26,6 +39,7 @@ namespace llvm
         Function *versions[6]; // v0 to v5
         Function *wrapper;
         Function *dispatcher; // Dispatcher function
+        std::string groupName; // NEW: Store which group this function belongs to       
 
         // Per-function static globals for adaptive runtime tracking
         GlobalVariable *callCounter;    // total call count
@@ -51,6 +65,12 @@ namespace llvm
         Function *createOptimizedDispatchWrapper(FunctionMetadata &metadata, Module &M);
         Function *createThinDispatcher(FunctionMetadata &metadata, Module &M);
         void createInitializationFunction(Module &M);
+        
+        // NEW: Helper functions for group configuration
+        std::string determineFunctionGroup(Function *F);
+        const FunctionGroupConfig& getGroupConfig(const std::string& groupName);
+        void printFunctionGroupInfo(Function *F, const std::string& groupName, 
+                                   const FunctionGroupConfig& config, raw_ostream &OS);
 
     public:
         SimpleAdaptivePassImpl() {}
@@ -61,6 +81,69 @@ namespace llvm
     {
         SimpleAdaptivePassImpl impl;
         return impl.run(M, AM);
+    }
+    
+    // NEW: Determine which group a function belongs to based on manual assignments
+    std::string SimpleAdaptivePassImpl::determineFunctionGroup(Function *F)
+    {
+        std::string funcName = F->getName().str();
+        
+        // MANUAL GROUP ASSIGNMENTS BASED ON FUNCTION NAMES
+        // Low frequency group (call count < 10k)
+        if (funcName.find("_ZN12_GLOBAL__N_115tinyBLAS_Q0_AVXI10block_q4_010block_q8_0fE7gemm4xNILi4EEEvllll") != std::string::npos) {
+            return "LOW_FREQUENCY";
+        }
+        
+        // Medium frequency group (call count 10k - 1M)  
+        if (funcName.find("_ZN12_GLOBAL__N_18tinyBLASILi16EDv16_fS1_tffE6mnpackEllll") != std::string::npos ||
+            // funcName.find("gemm<5>") != std::string::npos ||
+            funcName.find("quantize_row_q8_0") != std::string::npos ||
+            funcName.find("ggml_compute_forward_dup") != std::string::npos ||
+            funcName.find("ggml_compute_forward_rope_f32") != std::string::npos) {
+            return "MEDIUM_FREQUENCY";
+        }
+        
+        // High frequency group (call count > 1M)
+        if (funcName.find("ggml_fp32_to_fp16_row") != std::string::npos ||
+            funcName.find("ggml_vec_dot_q4_0_q8_0") != std::string::npos ||
+            funcName.find("ggml_vec_dot_q6_K_q8_K") != std::string::npos ||
+            funcName.find("ggml_vec_dot_f16") != std::string::npos) {
+            return "HIGH_FREQUENCY";
+        }
+        
+        // Check for explicit group attribute (override manual assignments)
+        if (F->hasFnAttribute("adaptive-group")) {
+            Attribute groupAttr = F->getFnAttribute("adaptive-group");
+            std::string groupName = groupAttr.getValueAsString().str();
+            if (FUNCTION_GROUPS.find(groupName) != FUNCTION_GROUPS.end()) {
+                return groupName;
+            }
+        }
+        
+        // Default to medium frequency for any unclassified adaptive functions
+        return "MEDIUM_FREQUENCY";
+    }
+
+    // NEW: Get configuration for a group
+    const FunctionGroupConfig& SimpleAdaptivePassImpl::getGroupConfig(const std::string& groupName)
+    {
+        auto it = FUNCTION_GROUPS.find(groupName);
+        if (it != FUNCTION_GROUPS.end()) {
+            return it->second;
+        }
+        return DEFAULT_CONFIG;
+    }
+
+    // NEW: Print function group information
+    void SimpleAdaptivePassImpl::printFunctionGroupInfo(Function *F, const std::string& groupName, 
+                                                       const FunctionGroupConfig& config, raw_ostream &OS)
+    {
+        OS << "[ADAPTIVE] Function: " << F->getName() 
+           << " | Group: " << groupName 
+           << " | Warmup: " << config.warmupRuns 
+           << " | Sample Rate: 1/" << config.sampleRate
+           << " | Threshold: " << config.profilingThreshold
+           << " | Desc: " << config.description << "\n";
     }
 
     PreservedAnalyses SimpleAdaptivePassImpl::run(Module &M, ModuleAnalysisManager &)
@@ -84,6 +167,12 @@ namespace llvm
         uint32_t funcId = 0;
         for (Function *F : adaptiveFunctions)
         {
+            // NEW: Determine group for this function
+            std::string groupName = determineFunctionGroup(F);
+            const FunctionGroupConfig& config = getGroupConfig(groupName);
+            
+            // Print group information
+            printFunctionGroupInfo(F, groupName, config, errs());
             processFunctionWithDirectDispatch(F, funcId++, M);
         }
 
@@ -347,6 +436,7 @@ namespace llvm
         FunctionMetadata metadata;
         metadata.original = F;
         auto funcName = F->getName().str();
+        metadata.groupName = determineFunctionGroup(F); // NEW: Store group name
 
         // Create versions
         for (int i = 0; i < 6; i++)
@@ -387,6 +477,9 @@ namespace llvm
     {
         LLVMContext &Ctx = M.getContext();
         Function *Orig = metadata.original;
+        
+        // NEW: Get configuration for this function's group
+        const FunctionGroupConfig& config = getGroupConfig(metadata.groupName);
 
         // Create wrapper function 
         Function *Wrapper = Function::Create(
@@ -414,9 +507,9 @@ namespace llvm
         ConstantInt *zero32 = cast<ConstantInt>(ConstantInt::get(i32Ty, 0));
         ConstantInt *one32 = cast<ConstantInt>(ConstantInt::get(i32Ty, 1));
         ConstantInt *two32 = cast<ConstantInt>(ConstantInt::get(i32Ty, 2));
-        ConstantInt *warmupThreshold = cast<ConstantInt>(ConstantInt::get(i32Ty, WARMUP_RUNS * 6));
-        ConstantInt *profilingThreshold = cast<ConstantInt>(ConstantInt::get(i32Ty, PROFILING_THRESHOLD));
-        ConstantInt *sampleRate = cast<ConstantInt>(ConstantInt::get(i32Ty, SAMPLE_RATE));
+        ConstantInt *warmupThreshold = cast<ConstantInt>(ConstantInt::get(i32Ty, config.warmupRuns * 6)); // Total warmup runs
+        ConstantInt *profilingThreshold = cast<ConstantInt>(ConstantInt::get(i32Ty, config.profilingThreshold));
+        ConstantInt *sampleRate = cast<ConstantInt>(ConstantInt::get(i32Ty, config.sampleRate));
 
         // Get printf for debugging
         FunctionType *PrintfType = FunctionType::get(i32Ty,
@@ -540,7 +633,7 @@ namespace llvm
                         MaybeAlign(4), AtomicOrdering::SequentiallyConsistent);
                     
                     // Check if this version still needs runs (old count < 200)
-                    Value *NeedsRun = Builder.CreateICmpULT(OldRunCount, ConstantInt::get(i32Ty, 200));
+                    Value *NeedsRun = Builder.CreateICmpULT(OldRunCount, ConstantInt::get(i32Ty, (config.profilingThreshold/6)));
                     
                     BasicBlock *UseVersionBB = BasicBlock::Create(Ctx, "use_v" + std::to_string(v), Wrapper);
                     BasicBlock *TryNextBB = (v < NUM_VERSIONS - 1) ? 
@@ -931,13 +1024,23 @@ namespace llvm
         FunctionType *PrintfType = FunctionType::get(Type::getInt32Ty(Ctx),
                                                      {PointerType::get(Type::getInt8Ty(Ctx), 0)}, true);
         FunctionCallee Printf = M.getOrInsertFunction("printf", PrintfType);
-        Value *InitMsg = Builder.CreateGlobalStringPtr(
-            "[INIT] Adaptive dispatcher with DIRECT PATCHING initialized:\n");
-        Builder.CreateCall(Printf, {InitMsg,
-                                    ConstantInt::get(Type::getInt32Ty(Ctx), WARMUP_RUNS),
-                                    ConstantInt::get(Type::getInt32Ty(Ctx), WARMUP_RUNS * 6),
-                                    ConstantInt::get(Type::getInt32Ty(Ctx), SAMPLE_RATE),
-                                    ConstantInt::get(Type::getInt32Ty(Ctx), PROFILING_THRESHOLD)});
+        // NEW: Print group configurations
+        Value *GroupHeaderMsg = Builder.CreateGlobalStringPtr(
+            "[INIT] Adaptive dispatcher with MANUAL GROUP CONFIGURATIONS initialized:\n");
+        Builder.CreateCall(Printf, {GroupHeaderMsg});
+        
+        // Print each group configuration
+        for (const auto& [groupName, config] : FUNCTION_GROUPS) {
+            Value *GroupMsg = Builder.CreateGlobalStringPtr(
+                "  - Group %s: Warmup=%d, Sample Rate=1/%d, Threshold=%d (%s)\n");
+            Value *GroupNameStr = Builder.CreateGlobalStringPtr(groupName);
+            Value *DescStr = Builder.CreateGlobalStringPtr(config.description);
+            Builder.CreateCall(Printf, {GroupMsg, GroupNameStr, 
+                                       ConstantInt::get(Type::getInt32Ty(Ctx), config.warmupRuns),
+                                       ConstantInt::get(Type::getInt32Ty(Ctx), config.sampleRate),
+                                       ConstantInt::get(Type::getInt32Ty(Ctx), config.profilingThreshold),
+                                       DescStr});
+        }
         Builder.CreateRetVoid();
 
         appendToGlobalCtors(M, InitFunc, 65535);
