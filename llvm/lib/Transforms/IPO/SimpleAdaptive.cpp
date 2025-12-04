@@ -36,7 +36,7 @@ namespace llvm
     struct FunctionMetadata
     {
         Function *original;
-        Function *versions[6]; // v0 to v5
+        Function *versions[4]; // v0 to v5
         Function *wrapper;
         Function *dispatcher; // Dispatcher function
         std::string groupName; // NEW: Store which group this function belongs to       
@@ -45,8 +45,8 @@ namespace llvm
         GlobalVariable *callCounter;    // total call count
         GlobalVariable *warmupCounter;  // warmup call count
         GlobalVariable *profileCounter; // profiled call count (sampled)
-        GlobalVariable *cpuCycles[6];   // accumulated cpu cycles per version
-        GlobalVariable *runCount[6];    // actual profiled runs per version
+        GlobalVariable *cpuCycles[4];   // accumulated cpu cycles per version
+        GlobalVariable *runCount[4];    // actual profiled runs per version
         GlobalVariable *bestVersion;    // best version index after profiling
         GlobalVariable *currentPhase;   // 0=warmup, 1=profiling, 2=optimal
         GlobalVariable *currentVersion; // current version being tested
@@ -235,10 +235,10 @@ namespace llvm
 
         metadata.functionPtr->setAlignment(Align(8));
 
-        const std::array<std::string, 6> versionStrs = {
-            "0", "1", "2", "3", "4", "5"};
+        const std::array<std::string, 4> versionStrs = {
+            "0", "1", "2", "3"};
 
-        for (int v = 0; v < 6; v++)
+        for (int v = 0; v < 4; v++)
         {
             metadata.cpuCycles[v] = new GlobalVariable(
                 M, i64Ty, false, GlobalValue::InternalLinkage,
@@ -267,68 +267,46 @@ namespace llvm
         metadata.currentVersion->setAlignment(Align(4));
     }
 
-    Function *SimpleAdaptivePassImpl::createVersion(Function *F, int versionId, Module &M)
-    {
+    Function *SimpleAdaptivePassImpl::createVersion(Function *F, int versionId, Module &M) {
         ValueToValueMapTy VMap;
         Function *NewF = CloneFunction(F, VMap);
         NewF->setName(F->getName() + "_v" + std::to_string(versionId));
         NewF->setLinkage(GlobalValue::InternalLinkage);
-
-        switch (versionId)
-        {
-        case 0: // BASELINE - Conservative
+    
+        // Apply NoInline to all versions for distinct measurement
+        NewF->addFnAttr(Attribute::NoInline); // Prevents identical optimization by caller
+    
+        switch (versionId) {
+            case 0: // BASELINE - Conservative
             // errs() << "  V0: Baseline (conservative)\n";
-            break;
-        case 1: // VECTORIZED - Maximum SIMD
-            NewF->addFnAttr("prefer-vector-width", "512");
-            NewF->addFnAttr("min-legal-vector-width", "256");
-            NewF->addFnAttr("target-features", "+avx512f,+avx512vl,+avx2,+fma");
-            // NewF->addFnAttr("target-cpu", "skylake-avx512");
-            NewF->addFnAttr("vectorize-predicate", "enable");
-            NewF->addFnAttr("force-vector-width", "8");
-            NewF->addFnAttr("force-vector-interleave", "4");
-            // errs() << "  V1: Maximum Vectorized (AVX512)\n";
-            break;
-        case 2: // LOOP OPTIMIZED - Aggressive Unrolling
-            NewF->addFnAttr("unroll-threshold", "100000");
-            NewF->addFnAttr("unroll-count", "16");
-            NewF->addFnAttr("unroll-allow-partial", "true");
-            NewF->addFnAttr("unroll-runtime", "true");
-            NewF->addFnAttr("unroll-full-unroll-max", "1024");
-            NewF->addFnAttr("interleave-count", "4");
-            // Branch optimization for loops
-            NewF->addFnAttr("tail-merge-threshold", "2");
-            NewF->addFnAttr("machine-block-placement", "true");
-            // errs() << "  V2: Aggressive Loop Optimized\n";
-            break;
-        case 3: // AGGRESSIVE INLINE - Maximum Inlining
-            NewF->addFnAttr("unsafe-fp-math", "true");
-            NewF->addFnAttr("no-nans-fp-math", "true");
-            NewF->addFnAttr("no-infs-fp-math", "true");
-            NewF->addFnAttr("approx-func-fp-math", "true");
-            // errs() << "  V3: Maximum Aggressive (inline + fast-math)\n";
-            break;
-        case 4: // BRANCH OPTIMIZED - Control Flow Focus
-            NewF->addFnAttr("branch-weights", "likely");
-            NewF->addFnAttr("profile-likely-prob", "0.9");
-            NewF->addFnAttr("jump-table-density", "10");
-            NewF->addFnAttr("min-jump-table-entries", "4");
-            NewF->addFnAttr("tail-call-opt", "true");
-            NewF->addFnAttr("x86-cmov-converter", "true");
-            NewF->addFnAttr("select-optimize", "true");
-            // errs() << "  V4: Branch Optimized (predictable branches)\n";
-            break;
-        case 5: // Math optimizations
-            NewF->addFnAttr(Attribute::AlwaysInline);
-            NewF->addFnAttr("inline-threshold", "100000");
-            NewF->addFnAttr("inlinehint-threshold", "50000");
-            NewF->addFnAttr("hot-call-site-threshold", "100000");
-            NewF->addFnAttr(Attribute::NoRecurse);
-            NewF->addFnAttr(Attribute::NoUnwind);
-            // errs() << "  V5: Math optimizations\n";
-            break;
+                break;
+            case 1: // V1: VECTORIZED - Maximum SIMD (Explicit AVX512)
+                NewF->addFnAttr("prefer-vector-width", "512");
+                NewF->addFnAttr("min-legal-vector-width", "512");
+                NewF->addFnAttr("target-features", "+avx512f,+avx512vl");
+                NewF->addFnAttr("vectorize-predicate", "enable");
+                break;
+    
+            case 2: // V2: LOOP OPTIMIZED - Aggressive Unroll/Scalar (Forcing non-AVX)
+                // Explicitly disable wider vectorization to force differentiation
+                NewF->addFnAttr("target-features", "-avx512f");
+                NewF->addFnAttr("prefer-vector-width", "128");
+                NewF->addFnAttr("unroll-count", "16");
+                NewF->addFnAttr("unroll-full-unroll-max", "1024");
+                NewF->addFnAttr("interleave-count", "4");
+                break;
+    
+            case 3: // V3: FAST-MATH - Optimization for Floats/General Aggressiveness
+                // These attributes enable optimizations based on relaxed math rules
+                NewF->addFnAttr(Attribute::AlwaysInline); // Still useful for optimization but needs careful testing
+                NewF->addFnAttr("unsafe-fp-math", "true");
+                NewF->addFnAttr("no-nans-fp-math", "true");
+                NewF->addFnAttr("no-infs-fp-math", "true");
+                NewF->addFnAttr("inline-threshold", "100000");
+                NewF->addFnAttr(Attribute::NoUnwind); // Attribute::NoUnwind is set using Attribute::get [2][3]
+                break;
         }
-
+    
         return NewF;
     }
 
@@ -386,7 +364,7 @@ namespace llvm
         metadata.groupName = determineFunctionGroup(F); // NEW: Store group name
 
         // Create versions
-        for (int i = 0; i < 6; i++)
+        for (int i = 0; i < 4; i++)
         {
             metadata.versions[i] = createVersion(F, i, M);
         }
@@ -454,7 +432,7 @@ namespace llvm
         ConstantInt *zero32 = cast<ConstantInt>(ConstantInt::get(i32Ty, 0));
         ConstantInt *one32 = cast<ConstantInt>(ConstantInt::get(i32Ty, 1));
         ConstantInt *two32 = cast<ConstantInt>(ConstantInt::get(i32Ty, 2));
-        ConstantInt *warmupThreshold = cast<ConstantInt>(ConstantInt::get(i32Ty, config.warmupRuns * 6)); // Total warmup runs
+        ConstantInt *warmupThreshold = cast<ConstantInt>(ConstantInt::get(i32Ty, config.warmupRuns * 4)); // Total warmup runs
         ConstantInt *profilingThreshold = cast<ConstantInt>(ConstantInt::get(i32Ty, config.profilingThreshold));
         ConstantInt *sampleRate = cast<ConstantInt>(ConstantInt::get(i32Ty, config.sampleRate));
 
@@ -475,7 +453,7 @@ namespace llvm
         PhaseSwitch->addCase(one32, ProfilingPhaseBB);
         PhaseSwitch->addCase(two32, OptimalPhaseBB);
 
-        const int NUM_VERSIONS = 6;
+        const int NUM_VERSIONS = 4;
 
         // Warmpup phase
         Builder.SetInsertPoint(WarmupPhaseBB);
@@ -566,7 +544,7 @@ namespace llvm
                     AtomicRMWInst::Add, metadata.currentVersion, one32,
                     MaybeAlign(4), AtomicOrdering::SequentiallyConsistent);
                 
-                // Apply modulo 6 to wrap around: v0->v1->v2->v3->v4->v5->v0->v1...
+                // Apply modulo 4 to wrap around: v0->v1->v2->v3->v4->v5->v0->v1...
                 Value *SelectedVersion = Builder.CreateURem(VersionCounter,
                                                            ConstantInt::get(i32Ty, NUM_VERSIONS));
 
@@ -617,7 +595,7 @@ namespace llvm
                             MaybeAlign(4), AtomicOrdering::SequentiallyConsistent);
                         
                         // Check if this version still needs runs (old count < 200)
-                        Value *NeedsRun = Builder.CreateICmpULT(OldRunCount, ConstantInt::get(i32Ty, (config.profilingThreshold/6)));
+                        Value *NeedsRun = Builder.CreateICmpULT(OldRunCount, ConstantInt::get(i32Ty, (config.profilingThreshold/4)));
                         
                         BasicBlock *UseVersionBB = BasicBlock::Create(Ctx, 
                             "use_v" + std::to_string(v) + "_attempt" + std::to_string(attempt), Wrapper);
@@ -920,7 +898,7 @@ namespace llvm
             BasicBlock *PatchDoneBB = BasicBlock::Create(Ctx, "patch_done", Wrapper);
             BasicBlock *DefaultPatchBB = BasicBlock::Create(Ctx, "default_patch", Wrapper);
 
-            SwitchInst *PatchSwitch = Builder.CreateSwitch(BestVersion, DefaultPatchBB, 6);
+            SwitchInst *PatchSwitch = Builder.CreateSwitch(BestVersion, DefaultPatchBB, 4);
 
             for (int i = 0; i < NUM_VERSIONS; i++)
             {
