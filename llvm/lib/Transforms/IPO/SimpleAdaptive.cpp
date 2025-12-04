@@ -670,7 +670,7 @@ namespace llvm
                             MaybeAlign(4), AtomicOrdering::SequentiallyConsistent);
                         
                         // Check if this version still needs runs (old count < 200)
-                        Value *NeedsRun = Builder.CreateICmpULT(OldRunCount, ConstantInt::get(i32Ty, int(510/6)));
+                        Value *NeedsRun = Builder.CreateICmpULT(OldRunCount, ConstantInt::get(i32Ty, (config.profilingThreshold/6)));
                         
                         BasicBlock *UseVersionBB = BasicBlock::Create(Ctx, 
                             "use_v" + std::to_string(v) + "_attempt" + std::to_string(attempt), Wrapper);
