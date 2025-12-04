@@ -17,8 +17,8 @@ namespace llvm
 {
     // Configuration constants
     static constexpr int WARMUP_RUNS = 10;           // Number of warmup runs per version
-    static constexpr int SAMPLE_RATE = 5;            // Sample 1 in N calls during profiling
-    static constexpr int PROFILING_THRESHOLD = 1200; // Total calls needed for profiling (after warmup)
+    static constexpr int SAMPLE_RATE = 2;            // Sample 1 in N calls during profiling
+    static constexpr int PROFILING_THRESHOLD = 510; // Total calls needed for profiling (after warmup)
 
     struct FunctionMetadata
     {
@@ -37,7 +37,7 @@ namespace llvm
         GlobalVariable *currentPhase;   // 0=warmup, 1=profiling, 2=optimal
         GlobalVariable *currentVersion; // current version being tested
         GlobalVariable *sampleCounter;  // counter for sampling
-        GlobalVariable *functionPtr;    // Function pointer for direct dispatch either wrapper or best function 
+        GlobalVariable *functionPtr;    // Function pointer for direct dispatch either wrapper or best function
     };
 
     class SimpleAdaptivePassImpl
@@ -190,8 +190,8 @@ namespace llvm
         switch (versionId)
         {
         case 0: // BASELINE - No optimizations
-            //NewF->addFnAttr(Attribute::OptimizeNone);
-            //NewF->addFnAttr(Attribute::NoInline);
+            // NewF->addFnAttr(Attribute::OptimizeNone);
+            // NewF->addFnAttr(Attribute::NoInline);
             break;
 
         case 1: // VECTORIZED - Force vectorization
@@ -388,7 +388,7 @@ namespace llvm
         LLVMContext &Ctx = M.getContext();
         Function *Orig = metadata.original;
 
-        // Create wrapper function 
+        // Create wrapper function
         Function *Wrapper = Function::Create(
             Orig->getFunctionType(),
             GlobalValue::InternalLinkage, // Internal linkage
@@ -464,34 +464,34 @@ namespace llvm
             // Use atomic CAS to ensure only ONE thread performs transition
             BasicBlock *DoWarmupTransitionBB = BasicBlock::Create(Ctx, "do_warmup_transition", Wrapper);
             BasicBlock *AlreadyInProfilingBB = BasicBlock::Create(Ctx, "already_in_profiling", Wrapper);
-            
+
             // Attempt atomic compare-exchange: if currentPhase == 0, set it to 1
             AtomicCmpXchgInst *CASWarmup = Builder.CreateAtomicCmpXchg(
                 metadata.currentPhase, zero32, one32,
-                MaybeAlign(4), 
+                MaybeAlign(4),
                 AtomicOrdering::SequentiallyConsistent,
                 AtomicOrdering::SequentiallyConsistent);
-            CASWarmup->setWeak(false);  // Strong CAS
-            
+            CASWarmup->setWeak(false); // Strong CAS
+
             // Extract the success flag from the result
             Value *CASWarmupResult = Builder.CreateExtractValue(CASWarmup, 1);
             Builder.CreateCondBr(CASWarmupResult, DoWarmupTransitionBB, AlreadyInProfilingBB);
-            
+
             // If CAS failed, another thread already transitioned - go to profiling
             Builder.SetInsertPoint(AlreadyInProfilingBB);
             Builder.CreateBr(ProfilingPhaseBB);
-            
+
             // Only the winning thread performs the transition
             Builder.SetInsertPoint(DoWarmupTransitionBB);
-            
+
             // Print transition message
             Value *TransMsg = Builder.CreateGlobalStringPtr(
                 "[WARMUP COMPLETE] %s - Transitioning to profiling phase after %d warmup runs\n");
             Builder.CreateCall(Printf, {TransMsg, FuncName, warmupThreshold});
 
             // Phase already updated by CAS above - no need to update again
-            
-            // Reset counters for profiling phase  
+
+            // Reset counters for profiling phase
             StoreInst *ResetProfile = Builder.CreateStore(zero32, metadata.profileCounter);
             ResetProfile->setAtomic(AtomicOrdering::Release);
             ResetProfile->setAlignment(Align(4));
@@ -516,60 +516,101 @@ namespace llvm
             BasicBlock *SkipSampleBB = BasicBlock::Create(Ctx, "skip_sample", Wrapper);
             Builder.CreateCondBr(ShouldSample, DoSampleBB, SkipSampleBB);
 
-            // Do Sample Block - measure performance
+            // Do Sample Block - measure performance with round-robin version selection
             Builder.SetInsertPoint(DoSampleBB);
             {
-                // Try to find a version that still needs profiling (< 200 runs)
+                // ROUND-ROBIN VERSION SELECTION with atomic operations to prevent race conditions
+                // Atomically get next version counter value and increment it
+                // Using fetch_add ensures each thread gets a unique counter value
+                Value *VersionCounter = Builder.CreateAtomicRMW(
+                    AtomicRMWInst::Add, metadata.currentVersion, one32,
+                    MaybeAlign(4), AtomicOrdering::SequentiallyConsistent);
                 
+                // Apply modulo 6 to wrap around: v0->v1->v2->v3->v4->v5->v0->v1...
+                Value *SelectedVersion = Builder.CreateURem(VersionCounter,
+                                                           ConstantInt::get(i32Ty, NUM_VERSIONS));
+
+                // Create blocks for round-robin checking
+                BasicBlock *RoundRobinStartBB = BasicBlock::Create(Ctx, "roundrobin_start", Wrapper);
+                Builder.CreateBr(RoundRobinStartBB);
+                
+                Builder.SetInsertPoint(RoundRobinStartBB);
+                
+                // Try up to NUM_VERSIONS times in round-robin fashion to find a version under 200 runs
                 BasicBlock *CheckVersionBBs[NUM_VERSIONS];
-                for (int v = 0; v < NUM_VERSIONS; v++)
+                for (int i = 0; i < NUM_VERSIONS; i++)
                 {
-                    CheckVersionBBs[v] = BasicBlock::Create(Ctx, "check_v" + std::to_string(v), Wrapper);
+                    CheckVersionBBs[i] = BasicBlock::Create(Ctx, "roundrobin_check" + std::to_string(i), Wrapper);
                 }
                 
                 Builder.CreateBr(CheckVersionBBs[0]);
                 
-                // Try each version sequentially
-                for (int v = 0; v < NUM_VERSIONS; v++)
+                // Check each version in round-robin order
+                for (int attempt = 0; attempt < NUM_VERSIONS; attempt++)
                 {
-                    Builder.SetInsertPoint(CheckVersionBBs[v]);
+                    Builder.SetInsertPoint(CheckVersionBBs[attempt]);
                     
-                    // Atomically try to claim a run for this version
-                    Value *OldRunCount = Builder.CreateAtomicRMW(
-                        AtomicRMWInst::Add, metadata.runCount[v], one32,
-                        MaybeAlign(4), AtomicOrdering::SequentiallyConsistent);
+                    // Calculate which version to try: (SelectedVersion + attempt) % NUM_VERSIONS
+                    Value *VersionToTry = Builder.CreateURem(
+                        Builder.CreateAdd(SelectedVersion, ConstantInt::get(i32Ty, attempt)),
+                        ConstantInt::get(i32Ty, NUM_VERSIONS));
                     
-                    // Check if this version still needs runs (old count < 200)
-                    Value *NeedsRun = Builder.CreateICmpULT(OldRunCount, ConstantInt::get(i32Ty, 200));
-                    
-                    BasicBlock *UseVersionBB = BasicBlock::Create(Ctx, "use_v" + std::to_string(v), Wrapper);
-                    BasicBlock *TryNextBB = (v < NUM_VERSIONS - 1) ? 
-                        CheckVersionBBs[v + 1] : TransitionToOptimalBB;
-                    
-                    Builder.CreateCondBr(NeedsRun, UseVersionBB, TryNextBB);
-                    
-                    // Use this version - store it and profile
-                    Builder.SetInsertPoint(UseVersionBB);
-                    StoreInst *VersionStore = Builder.CreateStore(ConstantInt::get(i32Ty, v), metadata.currentVersion);
-                    VersionStore->setAtomic(AtomicOrdering::Release);
-                    VersionStore->setAlignment(Align(4));
-                    Builder.CreateBr(UpdateStatsBB);
-                    
-                    // Didn't use this version - decrement back
-                    if (v < NUM_VERSIONS - 1)
+                    // Create switch statement to dispatch to correct version check
+                    BasicBlock *VersionCheckBBs[NUM_VERSIONS];
+                    for (int v = 0; v < NUM_VERSIONS; v++)
                     {
-                        Builder.SetInsertPoint(TryNextBB);
-                        Builder.CreateAtomicRMW(
-                            AtomicRMWInst::Sub, metadata.runCount[v], one32,
-                            MaybeAlign(4), AtomicOrdering::SequentiallyConsistent);
+                        VersionCheckBBs[v] = BasicBlock::Create(Ctx, 
+                            "check_v" + std::to_string(v) + "_attempt" + std::to_string(attempt), Wrapper);
                     }
-                    else
+                    
+                    SwitchInst *VersionSwitch = Builder.CreateSwitch(VersionToTry, VersionCheckBBs[0], NUM_VERSIONS);
+                    
+                    for (int v = 0; v < NUM_VERSIONS; v++)
                     {
-                        // Last version is also full - decrement and transition
-                        Builder.SetInsertPoint(TransitionToOptimalBB);
+                        VersionSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, v)), VersionCheckBBs[v]);
+                        
+                        Builder.SetInsertPoint(VersionCheckBBs[v]);
+                        
+                        // Atomically try to claim a run for this version
+                        Value *OldRunCount = Builder.CreateAtomicRMW(
+                            AtomicRMWInst::Add, metadata.runCount[v], one32,
+                            MaybeAlign(4), AtomicOrdering::SequentiallyConsistent);
+                        
+                        // Check if this version still needs runs (old count < 200)
+                        Value *NeedsRun = Builder.CreateICmpULT(OldRunCount, ConstantInt::get(i32Ty, int(510/6)));
+                        
+                        BasicBlock *UseVersionBB = BasicBlock::Create(Ctx, 
+                            "use_v" + std::to_string(v) + "_attempt" + std::to_string(attempt), Wrapper);
+                        
+                        // Create unique decrement block for this specific version
+                        BasicBlock *DecrementVersionBB = BasicBlock::Create(Ctx, 
+                            "decrement_v" + std::to_string(v) + "_attempt" + std::to_string(attempt), Wrapper);
+                        
+                        Builder.CreateCondBr(NeedsRun, UseVersionBB, DecrementVersionBB);
+                        
+                        // Use this version - store it and profile
+                        Builder.SetInsertPoint(UseVersionBB);
+                        StoreInst *VersionStore = Builder.CreateStore(ConstantInt::get(i32Ty, v), metadata.currentVersion);
+                        VersionStore->setAtomic(AtomicOrdering::Release);
+                        VersionStore->setAlignment(Align(4));
+                        Builder.CreateBr(UpdateStatsBB);
+                        
+                        // Didn't use this version - decrement back in version-specific block
+                        Builder.SetInsertPoint(DecrementVersionBB);
                         Builder.CreateAtomicRMW(
                             AtomicRMWInst::Sub, metadata.runCount[v], one32,
                             MaybeAlign(4), AtomicOrdering::SequentiallyConsistent);
+                        
+                        // After decrement, either try next attempt or transition to optimal
+                        if (attempt < NUM_VERSIONS - 1)
+                        {
+                            Builder.CreateBr(CheckVersionBBs[attempt + 1]);
+                        }
+                        else
+                        {
+                            // All versions are full - transition to optimal phase
+                            Builder.CreateBr(TransitionToOptimalBB);
+                        }
                     }
                 }
             }
@@ -753,23 +794,23 @@ namespace llvm
             // Use atomic CAS to ensure only ONE thread performs transition
             BasicBlock *DoTransitionBB = BasicBlock::Create(Ctx, "do_transition", Wrapper);
             BasicBlock *AlreadyTransitionedBB = BasicBlock::Create(Ctx, "already_transitioned", Wrapper);
-            
+
             // Attempt atomic compare-exchange: if currentPhase == 1, set it to 2
             AtomicCmpXchgInst *CAS = Builder.CreateAtomicCmpXchg(
                 metadata.currentPhase, one32, two32,
-                MaybeAlign(4), 
+                MaybeAlign(4),
                 AtomicOrdering::SequentiallyConsistent,
                 AtomicOrdering::SequentiallyConsistent);
-            CAS->setWeak(false);  // Strong CAS
-            
+            CAS->setWeak(false); // Strong CAS
+
             // Extract the success flag from the result
             Value *CASResult = Builder.CreateExtractValue(CAS, 1);
             Builder.CreateCondBr(CASResult, DoTransitionBB, AlreadyTransitionedBB);
-            
+
             // If CAS failed, another thread already transitioned - go to optimal
             Builder.SetInsertPoint(AlreadyTransitionedBB);
             Builder.CreateBr(OptimalPhaseBB);
-            
+
             // Only the winning thread performs the transition
             Builder.SetInsertPoint(DoTransitionBB);
 
