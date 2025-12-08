@@ -27,7 +27,7 @@ namespace llvm
     static std::map<std::string, FunctionGroupConfig> FUNCTION_GROUPS = {
         {"HIGH_FREQUENCY", {10, 10, 49998, "Functions with millions of calls"}},
         {"MEDIUM_FREQUENCY", {10, 5, 5010, "Functions with 10k-1M calls"}},
-        {"LOW_FREQUENCY", {10, 2, 750, "Functions with less than 10k calls"}}
+        {"LOW_FREQUENCY", {10, 2, 510, "Functions with less than 10k calls"}}
     };
 
     // Default configuration
@@ -274,13 +274,14 @@ namespace llvm
         NewF->setLinkage(GlobalValue::InternalLinkage);
     
         // Apply NoInline to all versions for distinct measurement
-        NewF->addFnAttr(Attribute::NoInline); // Prevents identical optimization by caller
+        // NewF->addFnAttr(Attribute::NoInline); // Prevents identical optimization by caller
     
         switch (versionId) {
             case 0: // BASELINE - Conservative
             // errs() << "  V0: Baseline (conservative)\n";
                 break;
             case 1: // V1: VECTORIZED - Maximum SIMD (Explicit AVX512)
+                NewF->addFnAttr(Attribute::NoInline);
                 NewF->addFnAttr("prefer-vector-width", "512");
                 NewF->addFnAttr("min-legal-vector-width", "512");
                 NewF->addFnAttr("target-features", "+avx512f,+avx512vl");
@@ -289,6 +290,7 @@ namespace llvm
     
             case 2: // V2: LOOP OPTIMIZED - Aggressive Unroll/Scalar (Forcing non-AVX)
                 // Explicitly disable wider vectorization to force differentiation
+                NewF->addFnAttr(Attribute::NoInline);
                 NewF->addFnAttr("target-features", "-avx512f");
                 NewF->addFnAttr("prefer-vector-width", "128");
                 NewF->addFnAttr("unroll-count", "16");
