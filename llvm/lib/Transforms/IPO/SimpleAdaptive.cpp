@@ -8,56 +8,122 @@
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/CommandLine.h"
 #include <map>
 #include <vector>
+#include <fstream>
+#include <sstream>
 
 using namespace llvm;
 
+static cl::opt<bool> ProductionMode(
+    "adaptive-production-mode",
+    cl::desc("Enable production mode with pre-determined best versions"),
+    cl::init(true));
+
+static cl::opt<std::string> BestVersionsConfig(
+    "adaptive-best-versions",
+    cl::desc("Path to configuration file with best version mappings"),
+    cl::value_desc("filename"),
+    cl::init("/mnt/Data/kamal/new_clone/llama.cpp/adaptive_build/BestVersions.conf"));
+
 namespace llvm
 {
+    struct BestVersionMap
+    {
+        std::map<std::string, int> functionToVersion;
 
-    struct FunctionGroupConfig {
+        bool loadFromFile(const std::string &filename)
+        {
+            std::ifstream file(filename);
+            if (!file.is_open())
+            {
+                errs() << "[PRODUCTION] Warning: Could not open config: "
+                       << filename << "\n";
+                return false;
+            }
+
+            std::string line;
+            while (std::getline(file, line))
+            {
+                if (line.empty() || line[0] == '#')
+                    continue;
+
+                size_t dashPos = line.find('-');
+                if (dashPos == std::string::npos)
+                    continue;
+
+                std::string funcName = line.substr(0, dashPos);
+                std::string versionStr = line.substr(dashPos + 1);
+
+                // Trim whitespace
+                funcName.erase(0, funcName.find_first_not_of(" \t"));
+                funcName.erase(funcName.find_last_not_of(" \t") + 1);
+                versionStr.erase(0, versionStr.find_first_not_of(" \t"));
+                versionStr.erase(versionStr.find_last_not_of(" \t") + 1);
+
+                if (versionStr[0] == 'v')
+                {
+                    int version = std::stoi(versionStr.substr(1));
+                    functionToVersion[funcName] = version;
+                    errs() << "[PRODUCTION] Loaded: " << funcName
+                           << " -> v" << version << "\n";
+                }
+            }
+
+            file.close();
+            return !functionToVersion.empty();
+        }
+
+        int getBestVersion(const std::string &funcName) const
+        {
+            auto it = functionToVersion.find(funcName);
+            return (it != functionToVersion.end()) ? it->second : -1;
+        }
+    };
+
+    struct FunctionGroupConfig
+    {
         int warmupRuns;
         int sampleRate;
         int profilingThreshold;
         std::string description;
     };
-    
-    // Function group configurations - UPDATED with your requirements
+
     static std::map<std::string, FunctionGroupConfig> FUNCTION_GROUPS = {
         {"HIGH_FREQUENCY", {10, 10, 49998, "Functions with millions of calls"}},
         {"MEDIUM_FREQUENCY", {10, 5, 5010, "Functions with 10k-1M calls"}},
-        {"LOW_FREQUENCY", {10, 2, 510, "Functions with less than 10k calls"}}
-    };
+        {"LOW_FREQUENCY", {10, 2, 510, "Functions with less than 10k calls"}}};
 
-    // Default configuration
     static const FunctionGroupConfig DEFAULT_CONFIG = {10, 2, 1200, "Default configuration"};
 
     struct FunctionMetadata
     {
         Function *original;
-        Function *versions[4]; // v0 to v5
+        Function *versions[4]; // v0 to v3
         Function *wrapper;
-        Function *dispatcher; // Dispatcher function
-        std::string groupName; // NEW: Store which group this function belongs to       
+        Function *dispatcher;
+        std::string groupName;
 
-        // Per-function static globals for adaptive runtime tracking
-        GlobalVariable *callCounter;    // total call count
-        GlobalVariable *warmupCounter;  // warmup call count
-        GlobalVariable *profileCounter; // profiled call count (sampled)
-        GlobalVariable *cpuCycles[4];   // accumulated cpu cycles per version
-        GlobalVariable *runCount[4];    // actual profiled runs per version
-        GlobalVariable *bestVersion;    // best version index after profiling
-        GlobalVariable *currentPhase;   // 0=warmup, 1=profiling, 2=optimal
-        GlobalVariable *currentVersion; // current version being tested
-        GlobalVariable *sampleCounter;  // counter for sampling
-        GlobalVariable *functionPtr;    // Function pointer for direct dispatch either wrapper or best function
+        Function *bestVersionOnly; // Only best version for production
+
+        GlobalVariable *callCounter;
+        GlobalVariable *warmupCounter;
+        GlobalVariable *profileCounter;
+        GlobalVariable *cpuCycles[4];
+        GlobalVariable *runCount[4];
+        GlobalVariable *bestVersion;
+        GlobalVariable *currentPhase;
+        GlobalVariable *currentVersion;
+        GlobalVariable *sampleCounter;
+        GlobalVariable *functionPtr;
     };
 
     class SimpleAdaptivePassImpl
     {
     private:
         std::map<Function *, FunctionMetadata> functionMap;
+        BestVersionMap bestVersions;
 
         Function *createVersion(Function *F, int versionId, Module &M);
         void createWrapperStaticVars(FunctionMetadata &metadata, Module &M);
@@ -65,12 +131,13 @@ namespace llvm
         Function *createOptimizedDispatchWrapper(FunctionMetadata &metadata, Module &M);
         Function *createThinDispatcher(FunctionMetadata &metadata, Module &M);
         void createInitializationFunction(Module &M);
-        
-        // NEW: Helper functions for group configuration
+
+        void processProductionMode(Function *F, Module &M);
+
         std::string determineFunctionGroup(Function *F);
-        const FunctionGroupConfig& getGroupConfig(const std::string& groupName);
-        void printFunctionGroupInfo(Function *F, const std::string& groupName, 
-                                   const FunctionGroupConfig& config, raw_ostream &OS);
+        const FunctionGroupConfig &getGroupConfig(const std::string &groupName);
+        void printFunctionGroupInfo(Function *F, const std::string &groupName,
+                                    const FunctionGroupConfig &config, raw_ostream &OS);
 
     public:
         SimpleAdaptivePassImpl() {}
@@ -82,75 +149,91 @@ namespace llvm
         SimpleAdaptivePassImpl impl;
         return impl.run(M, AM);
     }
-    
-    // NEW: Determine which group a function belongs to based on manual assignments
+
     std::string SimpleAdaptivePassImpl::determineFunctionGroup(Function *F)
     {
         std::string funcName = F->getName().str();
-        
-        // MANUAL GROUP ASSIGNMENTS BASED ON FUNCTION NAMES
-        // Low frequency group (call count < 10k)
-        if (funcName.find("_ZN12_GLOBAL__N_115tinyBLAS_Q0_AVXI10block_q4_010block_q8_0fE7gemm4xNILi4EEEvllll") != std::string::npos) {
+
+        if (funcName.find("_ZN12_GLOBAL__N_115tinyBLAS_Q0_AVXI10block_q4_010block_q8_0fE7gemm4xNILi4EEEvllll") != std::string::npos)
+        {
             return "LOW_FREQUENCY";
         }
-        
-        // Medium frequency group (call count 10k - 1M)  
+
         if (funcName.find("_ZN12_GLOBAL__N_18tinyBLASILi16EDv16_fS1_tffE6mnpackEllll") != std::string::npos ||
-            // funcName.find("gemm<5>") != std::string::npos ||
             funcName.find("quantize_row_q8_0") != std::string::npos ||
             funcName.find("ggml_compute_forward_dup") != std::string::npos ||
-            funcName.find("ggml_compute_forward_rope_f32") != std::string::npos) {
+            funcName.find("ggml_compute_forward_rope_f32") != std::string::npos)
+        {
             return "MEDIUM_FREQUENCY";
         }
-        
-        // High frequency group (call count > 1M)
+
         if (funcName.find("ggml_fp32_to_fp16_row") != std::string::npos ||
             funcName.find("ggml_vec_dot_q4_0_q8_0") != std::string::npos ||
             funcName.find("ggml_vec_dot_q6_K_q8_K") != std::string::npos ||
-            funcName.find("ggml_vec_dot_f16") != std::string::npos) {
+            funcName.find("ggml_vec_dot_f16") != std::string::npos)
+        {
             return "HIGH_FREQUENCY";
         }
-        
-        // Check for explicit group attribute (override manual assignments)
-        if (F->hasFnAttribute("adaptive-group")) {
+
+        if (F->hasFnAttribute("adaptive-group"))
+        {
             Attribute groupAttr = F->getFnAttribute("adaptive-group");
             std::string groupName = groupAttr.getValueAsString().str();
-            if (FUNCTION_GROUPS.find(groupName) != FUNCTION_GROUPS.end()) {
+            if (FUNCTION_GROUPS.find(groupName) != FUNCTION_GROUPS.end())
+            {
                 return groupName;
             }
         }
-        
-        // Default to medium frequency for any unclassified adaptive functions
+
         return "MEDIUM_FREQUENCY";
     }
 
-    // NEW: Get configuration for a group
-    const FunctionGroupConfig& SimpleAdaptivePassImpl::getGroupConfig(const std::string& groupName)
+    const FunctionGroupConfig &SimpleAdaptivePassImpl::getGroupConfig(const std::string &groupName)
     {
         auto it = FUNCTION_GROUPS.find(groupName);
-        if (it != FUNCTION_GROUPS.end()) {
+        if (it != FUNCTION_GROUPS.end())
+        {
             return it->second;
         }
         return DEFAULT_CONFIG;
     }
 
-    // NEW: Print function group information
-    void SimpleAdaptivePassImpl::printFunctionGroupInfo(Function *F, const std::string& groupName, 
-                                                       const FunctionGroupConfig& config, raw_ostream &OS)
+    void SimpleAdaptivePassImpl::printFunctionGroupInfo(Function *F, const std::string &groupName,
+                                                        const FunctionGroupConfig &config, raw_ostream &OS)
     {
-        OS << "[ADAPTIVE] Function: " << F->getName() 
-           << " | Group: " << groupName 
-           << " | Warmup: " << config.warmupRuns 
+        OS << "[ADAPTIVE] Function: " << F->getName()
+           << " | Group: " << groupName
+           << " | Warmup: " << config.warmupRuns
            << " | Sample Rate: 1/" << config.sampleRate
            << " | Threshold: " << config.profilingThreshold
            << " | Desc: " << config.description << "\n";
     }
 
+    // ========================================================================
+    // CHANGE 6: Modified run() to support production mode
+    // ========================================================================
     PreservedAnalyses SimpleAdaptivePassImpl::run(Module &M, ModuleAnalysisManager &)
     {
         functionMap.clear();
 
-        // Collect adaptive functions
+        // Check if production mode is enabled
+        if (ProductionMode)
+        {
+            errs() << "========================================\n";
+            errs() << "[PRODUCTION MODE] Loading best versions\n";
+            errs() << "========================================\n";
+
+            if (!bestVersions.loadFromFile(BestVersionsConfig))
+            {
+                errs() << "[PRODUCTION] ERROR: Could not load config file\n";
+                errs() << "[PRODUCTION] Falling back to profiling mode\n";
+            }
+            else
+            {
+                errs() << "[PRODUCTION] Configuration loaded successfully\n";
+            }
+        }
+
         std::vector<Function *> adaptiveFunctions;
         for (Function &F : M)
         {
@@ -159,782 +242,350 @@ namespace llvm
                 adaptiveFunctions.push_back(&F);
             }
         }
+
         if (adaptiveFunctions.empty())
         {
             return PreservedAnalyses::all();
         }
 
-        uint32_t funcId = 0;
-        for (Function *F : adaptiveFunctions)
+        if (ProductionMode && !bestVersions.functionToVersion.empty())
         {
-            // NEW: Determine group for this function
-            std::string groupName = determineFunctionGroup(F);
-            const FunctionGroupConfig& config = getGroupConfig(groupName);
-            
-            // Print group information
-            printFunctionGroupInfo(F, groupName, config, errs());
-            processFunctionWithDirectDispatch(F, funcId++, M);
-        }
+            // PRODUCTION MODE: Generate only best versions
+            errs() << "[PRODUCTION] Processing " << adaptiveFunctions.size()
+                   << " functions in production mode\n";
 
-        createInitializationFunction(M);
+            for (Function *F : adaptiveFunctions)
+            {
+                processProductionMode(F, M);
+            }
+        }
+        else
+        {
+            // PROFILING MODE: Original behavior
+            uint32_t funcId = 0;
+            for (Function *F : adaptiveFunctions)
+            {
+                std::string groupName = determineFunctionGroup(F);
+                const FunctionGroupConfig &config = getGroupConfig(groupName);
+                printFunctionGroupInfo(F, groupName, config, errs());
+                processFunctionWithDirectDispatch(F, funcId++, M);
+            }
+            createInitializationFunction(M);
+        }
 
         return PreservedAnalyses::none();
     }
 
-    void SimpleAdaptivePassImpl::createWrapperStaticVars(FunctionMetadata &metadata, Module &M)
+    void SimpleAdaptivePassImpl::processProductionMode(Function *F, Module &M)
     {
-        LLVMContext &Ctx = M.getContext();
-        const std::string baseName = metadata.original->getName().str();
+        std::string funcName = F->getName().str();
+        errs() << "\n[PRODUCTION] Processing function: " << funcName << "\n";
 
-        Type *i32Ty = Type::getInt32Ty(Ctx);
-        Type *i64Ty = Type::getInt64Ty(Ctx);
-        Type *funcPtrTy = metadata.original->getFunctionType()->getPointerTo();
+        // Look up best version from config
+        int bestVersionIdx = bestVersions.getBestVersion(funcName);
 
-        const std::string counterName = "__static_counter_" + baseName;
-        const std::string warmupName = "__static_warmup_" + baseName;
-        const std::string profileName = "__static_profile_" + baseName;
-        const std::string bestName = "__static_best_" + baseName;
-        const std::string phaseName = "__static_phase_" + baseName;
-        const std::string currentVersionName = "__static_current_version_" + baseName;
-        const std::string sampleCounterName = "__static_sample_counter_" + baseName;
-        const std::string funcPtrName = "__static_funcptr_" + baseName;
-        const std::string cyclesBase = "__static_cycles_" + baseName + "_v";
-        const std::string runsBase = "__static_runs_" + baseName + "_v";
-
-        // Create variables with atomic alignment
-        metadata.callCounter = new GlobalVariable(
-            M, i32Ty, false, GlobalValue::InternalLinkage,
-            ConstantInt::get(i32Ty, 0), counterName);
-        metadata.callCounter->setAlignment(Align(4));
-
-        metadata.warmupCounter = new GlobalVariable(
-            M, i32Ty, false, GlobalValue::InternalLinkage,
-            ConstantInt::get(i32Ty, 0), warmupName);
-        metadata.warmupCounter->setAlignment(Align(4));
-
-        metadata.profileCounter = new GlobalVariable(
-            M, i32Ty, false, GlobalValue::InternalLinkage,
-            ConstantInt::get(i32Ty, 0), profileName);
-        metadata.profileCounter->setAlignment(Align(4));
-
-        metadata.sampleCounter = new GlobalVariable(
-            M, i32Ty, false, GlobalValue::InternalLinkage,
-            ConstantInt::get(i32Ty, 0), sampleCounterName);
-        metadata.sampleCounter->setAlignment(Align(4));
-
-        auto *ptrToFuncTy = PointerType::get(funcPtrTy, 0); // i.e. T*
-        auto *nullFuncPtr = ConstantPointerNull::get(ptrToFuncTy);
-
-        metadata.functionPtr = new GlobalVariable(
-            M,
-            ptrToFuncTy, // The type of the global var
-            false,
-            GlobalValue::InternalLinkage,
-            nullFuncPtr, // initializer
-            funcPtrName);
-
-        metadata.functionPtr->setAlignment(Align(8));
-
-        const std::array<std::string, 4> versionStrs = {
-            "0", "1", "2", "3"};
-
-        for (int v = 0; v < 4; v++)
+        if (bestVersionIdx == -1)
         {
-            metadata.cpuCycles[v] = new GlobalVariable(
-                M, i64Ty, false, GlobalValue::InternalLinkage,
-                ConstantInt::get(i64Ty, 0), cyclesBase + versionStrs[v]);
-            metadata.cpuCycles[v]->setAlignment(Align(8));
-
-            metadata.runCount[v] = new GlobalVariable(
-                M, i32Ty, false, GlobalValue::InternalLinkage,
-                ConstantInt::get(i32Ty, 0), runsBase + versionStrs[v]);
-            metadata.runCount[v]->setAlignment(Align(4));
+            errs() << "[PRODUCTION] No best version configured, skipping\n";
+            return;
         }
 
-        metadata.bestVersion = new GlobalVariable(
-            M, i32Ty, false, GlobalValue::InternalLinkage,
-            ConstantInt::get(i32Ty, -1), bestName);
-        metadata.bestVersion->setAlignment(Align(4));
+        errs() << "[PRODUCTION] Best version from config: v" << bestVersionIdx << "\n";
 
-        metadata.currentPhase = new GlobalVariable(
-            M, i32Ty, false, GlobalValue::InternalLinkage,
-            ConstantInt::get(i32Ty, 0), phaseName); // 0=warmup, 1=profiling, 2=optimal
-        metadata.currentPhase->setAlignment(Align(4));
+        errs() << "[PRODUCTION] Creating best version v" << bestVersionIdx
+               << " directly...\n";
 
-        metadata.currentVersion = new GlobalVariable(
-            M, i32Ty, false, GlobalValue::InternalLinkage,
-            ConstantInt::get(i32Ty, 0), currentVersionName);
-        metadata.currentVersion->setAlignment(Align(4));
+        FunctionMetadata metadata;
+        metadata.original = F;
+        metadata.bestVersionOnly = createVersion(F, bestVersionIdx, M);
+
+        if (metadata.bestVersionOnly)
+        {
+            errs() << "[PRODUCTION]  Created: "
+                   << metadata.bestVersionOnly->getName() << "\n";
+
+            errs() << "[PRODUCTION] Replacing original function with v"
+                   << bestVersionIdx << "...\n";
+
+            // Replace all uses of original with best version
+            F->replaceAllUsesWith(metadata.bestVersionOnly);
+            metadata.bestVersionOnly->takeName(F);
+
+            F->setName(funcName + "_original");
+            F->setLinkage(GlobalValue::InternalLinkage);
+
+
+            errs() << "[PRODUCTION]  Successfully replaced " << F->getName().str()
+                   << " with " << metadata.bestVersionOnly->getName().str() << "\n";
+        }
+        else
+        {
+            errs() << "[PRODUCTION] ✗ Failed to create best version v"
+                   << bestVersionIdx << "\n";
+        }
+
+        functionMap[F] = metadata;
     }
 
-    Function *SimpleAdaptivePassImpl::createVersion(Function *F, int versionId, Module &M) {
+    Function *SimpleAdaptivePassImpl::createVersion(Function *F, int versionId, Module &M)
+    {
         ValueToValueMapTy VMap;
         Function *NewF = CloneFunction(F, VMap);
         NewF->setName(F->getName() + "_v" + std::to_string(versionId));
         NewF->setLinkage(GlobalValue::InternalLinkage);
-    
-        // Apply NoInline to all versions for distinct measurement
-        // NewF->addFnAttr(Attribute::NoInline); // Prevents identical optimization by caller
-    
-        switch (versionId) {
-            case 0: // BASELINE - Conservative
-            // errs() << "  V0: Baseline (conservative)\n";
-                break;
-            case 1: // V1: VECTORIZED - Maximum SIMD (Explicit AVX512)
-                NewF->addFnAttr(Attribute::NoInline);
-                NewF->addFnAttr("prefer-vector-width", "512");
-                NewF->addFnAttr("min-legal-vector-width", "512");
-                NewF->addFnAttr("target-features", "+avx512f,+avx512vl");
-                NewF->addFnAttr("vectorize-predicate", "enable");
-                break;
-    
-            case 2: // V2: LOOP OPTIMIZED - Aggressive Unroll/Scalar (Forcing non-AVX)
-                // Explicitly disable wider vectorization to force differentiation
-                NewF->addFnAttr(Attribute::NoInline);
-                NewF->addFnAttr("target-features", "-avx512f");
-                NewF->addFnAttr("prefer-vector-width", "128");
-                NewF->addFnAttr("unroll-count", "16");
-                NewF->addFnAttr("unroll-full-unroll-max", "1024");
-                NewF->addFnAttr("interleave-count", "4");
-                break;
-    
-            case 3: // V3: FAST-MATH - Optimization for Floats/General Aggressiveness
-                // These attributes enable optimizations based on relaxed math rules
-                NewF->addFnAttr(Attribute::AlwaysInline); // Still useful for optimization but needs careful testing
-                NewF->addFnAttr("unsafe-fp-math", "true");
-                NewF->addFnAttr("no-nans-fp-math", "true");
-                NewF->addFnAttr("no-infs-fp-math", "true");
-                NewF->addFnAttr("inline-threshold", "100000");
-                NewF->addFnAttr(Attribute::NoUnwind); // Attribute::NoUnwind is set using Attribute::get [2][3]
-                break;
+
+        switch (versionId)
+        {
+        case 0: // BASELINE - Conservative
+                // errs() << "  V0: Baseline (conservative)\n";
+            break;
+        case 1: // V1: VECTORIZED - Maximum SIMD (Explicit AVX512)
+            NewF->addFnAttr(Attribute::NoInline);
+            NewF->addFnAttr("prefer-vector-width", "512");
+            NewF->addFnAttr("min-legal-vector-width", "512");
+            NewF->addFnAttr("target-features", "+avx512f,+avx512vl");
+            NewF->addFnAttr("vectorize-predicate", "enable");
+            break;
+
+        case 2: // V2: LOOP OPTIMIZED - Aggressive Unroll/Scalar (Forcing non-AVX)
+            // Explicitly disable wider vectorization to force differentiation
+            NewF->addFnAttr(Attribute::NoInline);
+            //NewF->addFnAttr("target-features", "-avx512f");
+            //NewF->addFnAttr("prefer-vector-width", "128");
+            NewF->addFnAttr("unroll-count", "16");
+            NewF->addFnAttr("unroll-full-unroll-max", "1024");
+            NewF->addFnAttr("interleave-count", "4");
+            break;
+
+        case 3: // V3: FAST-MATH - Optimization for Floats/General Aggressiveness
+            // These attributes enable optimizations based on relaxed math rules
+            NewF->addFnAttr(Attribute::AlwaysInline); // Still useful for optimization but needs careful testing
+            NewF->addFnAttr("unsafe-fp-math", "true");
+            NewF->addFnAttr("no-nans-fp-math", "true");
+            NewF->addFnAttr("no-infs-fp-math", "true");
+            NewF->addFnAttr("inline-threshold", "100000");
+            NewF->addFnAttr(Attribute::NoUnwind); // Attribute::NoUnwind is set using Attribute::get [2][3]
+            break;
         }
-    
+
         return NewF;
     }
 
-    Function *SimpleAdaptivePassImpl::createThinDispatcher(FunctionMetadata &metadata, Module &M)
+    // Keep the rest of the original implementation for profiling mode
+    void SimpleAdaptivePassImpl::createWrapperStaticVars(FunctionMetadata &metadata, Module &M)
     {
+        // Original implementation unchanged
         LLVMContext &Ctx = M.getContext();
-        Function *Orig = metadata.original;
+        Type *i32Ty = Type::getInt32Ty(Ctx);
+        Type *i64Ty = Type::getInt64Ty(Ctx);
+        PointerType *ptrTy = PointerType::get(metadata.original->getFunctionType(), 0);
 
-        // Create dispatcher function with same signature as original
-        Function *Dispatcher = Function::Create(
-            Orig->getFunctionType(),
-            Orig->getLinkage(),
-            Orig->getName() + "_dispatcher",
-            &M);
-        Dispatcher->copyAttributesFrom(Orig);
+        std::string baseName = metadata.original->getName().str();
 
-        // Mark as always inline for minimal overhead
-        Dispatcher->addFnAttr(Attribute::AlwaysInline);
-
-        BasicBlock *Entry = BasicBlock::Create(Ctx, "entry", Dispatcher);
-        IRBuilder<> Builder(Entry);
-
-        // Load the function pointer
-        LoadInst *FuncPtrLoad = Builder.CreateLoad(
-            metadata.original->getFunctionType()->getPointerTo(),
-            metadata.functionPtr);
-        FuncPtrLoad->setAtomic(AtomicOrdering::Acquire);
-        FuncPtrLoad->setAlignment(Align(8));
-
-        // Collect arguments
-        std::vector<Value *> Args;
-        for (auto &Arg : Dispatcher->args())
-            Args.push_back(&Arg);
-
-        // Call through the function pointer
-        if (Orig->getReturnType()->isVoidTy())
+        auto createGlobal = [&](const std::string &name, Type *type, uint64_t initVal)
         {
-            Builder.CreateCall(Orig->getFunctionType(), FuncPtrLoad, Args);
-            Builder.CreateRetVoid();
-        }
-        else
+            Constant *InitVal = (type->isIntegerTy(32))
+                                    ? cast<Constant>(ConstantInt::get(i32Ty, initVal))
+                                    : cast<Constant>(ConstantInt::get(i64Ty, initVal));
+            return new GlobalVariable(M, type, false, GlobalValue::InternalLinkage,
+                                      InitVal, baseName + name);
+        };
+
+        metadata.callCounter = createGlobal("_call_counter", i32Ty, 0);
+        metadata.warmupCounter = createGlobal("_warmup_counter", i32Ty, 0);
+        metadata.profileCounter = createGlobal("_profile_counter", i32Ty, 0);
+        metadata.bestVersion = createGlobal("_best_version", i32Ty, 0);
+        metadata.currentPhase = createGlobal("_current_phase", i32Ty, 0);
+        metadata.currentVersion = createGlobal("_current_version", i32Ty, 0);
+        metadata.sampleCounter = createGlobal("_sample_counter", i32Ty, 0);
+
+        for (int i = 0; i < 4; i++)
         {
-            Value *Result = Builder.CreateCall(Orig->getFunctionType(), FuncPtrLoad, Args);
-            Builder.CreateRet(Result);
+            metadata.cpuCycles[i] = createGlobal(
+                "_cpu_cycles_v" + std::to_string(i), i64Ty, 0);
+            metadata.runCount[i] = createGlobal(
+                "_run_count_v" + std::to_string(i), i32Ty, 0);
         }
 
-        return Dispatcher;
+        metadata.functionPtr = new GlobalVariable(
+            M, ptrTy, false, GlobalValue::InternalLinkage,
+            ConstantPointerNull::get(ptrTy),
+            baseName + "_function_ptr");
     }
 
     void SimpleAdaptivePassImpl::processFunctionWithDirectDispatch(Function *F, uint32_t funcId, Module &M)
     {
+        // Original profiling mode implementation
         FunctionMetadata metadata;
         metadata.original = F;
-        auto funcName = F->getName().str();
-        metadata.groupName = determineFunctionGroup(F); // NEW: Store group name
 
-        // Create versions
         for (int i = 0; i < 4; i++)
         {
             metadata.versions[i] = createVersion(F, i, M);
         }
 
-        // Create static vars for wrapper
         createWrapperStaticVars(metadata, M);
-
-        // Create wrapper (profiling logic)
+        metadata.dispatcher = createThinDispatcher(metadata, M);
         metadata.wrapper = createOptimizedDispatchWrapper(metadata, M);
 
-        // Create thin dispatcher
-        metadata.dispatcher = createThinDispatcher(metadata, M);
+        LLVMContext &Ctx = M.getContext();
+        IRBuilder<> Builder(Ctx);
+        BasicBlock *Entry = BasicBlock::Create(Ctx, "entry", metadata.dispatcher);
+        Builder.SetInsertPoint(Entry);
 
-        // Initialize function pointer to point to wrapper
-        metadata.functionPtr->setInitializer(
-            ConstantExpr::getPointerCast(metadata.wrapper,
-                                         metadata.original->getFunctionType()->getPointerTo()));
+        LoadInst *FuncLoad = Builder.CreateLoad(
+            metadata.original->getFunctionType()->getPointerTo(),
+            metadata.functionPtr);
+        FuncLoad->setAtomic(AtomicOrdering::Acquire);
+        FuncLoad->setAlignment(Align(8));
 
-        // Replace all uses with the dispatcher
+        Value *IsNull = Builder.CreateIsNull(FuncLoad);
+        BasicBlock *InitBB = BasicBlock::Create(Ctx, "init", metadata.dispatcher);
+        BasicBlock *CallBB = BasicBlock::Create(Ctx, "call", metadata.dispatcher);
+        Builder.CreateCondBr(IsNull, InitBB, CallBB);
+
+        Builder.SetInsertPoint(InitBB);
+        Value *WrapperPtr = Builder.CreatePointerCast(
+            metadata.wrapper,
+            metadata.original->getFunctionType()->getPointerTo());
+        StoreInst *InitStore = Builder.CreateStore(WrapperPtr, metadata.functionPtr);
+        InitStore->setAtomic(AtomicOrdering::Release);
+        InitStore->setAlignment(Align(8));
+        Builder.CreateBr(CallBB);
+
+        Builder.SetInsertPoint(CallBB);
+        PHINode *Phi = Builder.CreatePHI(
+            metadata.original->getFunctionType()->getPointerTo(), 2);
+        Phi->addIncoming(FuncLoad, Entry);
+        Phi->addIncoming(WrapperPtr, InitBB);
+
+        std::vector<Value *> Args;
+        for (auto &Arg : metadata.dispatcher->args())
+            Args.push_back(&Arg);
+
+        if (F->getReturnType()->isVoidTy())
+        {
+            Builder.CreateCall(F->getFunctionType(), Phi, Args);
+            Builder.CreateRetVoid();
+        }
+        else
+        {
+            Value *Result = Builder.CreateCall(F->getFunctionType(), Phi, Args);
+            Builder.CreateRet(Result);
+        }
+
         F->replaceAllUsesWith(metadata.dispatcher);
-        metadata.dispatcher->takeName(F);
-
-        F->setName(funcName + "_original");
-        F->setLinkage(GlobalValue::InternalLinkage);
-
-        errs() << F->getName().str() << "\n";
-        errs() << metadata.wrapper->getName().str() << "\n";
-        errs() << metadata.dispatcher->getName().str() << "\n";
-        errs() << metadata.dispatcher->getName().str() << "\n";
-
         functionMap[F] = metadata;
+    }
+
+    Function *SimpleAdaptivePassImpl::createThinDispatcher(FunctionMetadata &metadata, Module &M)
+    {
+        Function *Orig = metadata.original;
+        FunctionType *FT = Orig->getFunctionType();
+        std::string dispatcherName = Orig->getName().str() + "_dispatch";
+
+        Function *Dispatcher = Function::Create(
+            FT, GlobalValue::ExternalLinkage, dispatcherName, &M);
+
+        size_t argIdx = 0;
+        for (auto &Arg : Dispatcher->args())
+        {
+            if (argIdx < Orig->arg_size())
+            {
+                Arg.setName(Orig->getArg(argIdx)->getName());
+            }
+            argIdx++;
+        }
+
+        return Dispatcher;
     }
 
     Function *SimpleAdaptivePassImpl::createOptimizedDispatchWrapper(FunctionMetadata &metadata, Module &M)
     {
-        LLVMContext &Ctx = M.getContext();
+        // Original wrapper implementation - keeping for profiling mode
         Function *Orig = metadata.original;
-        
-        // NEW: Get configuration for this function's group
-        const FunctionGroupConfig& config = getGroupConfig(metadata.groupName);
+        std::string wrapperName = Orig->getName().str() + "_wrapper";
 
-        // Create wrapper function
+        if (M.getFunction(wrapperName))
+        {
+            return M.getFunction(wrapperName);
+        }
+
         Function *Wrapper = Function::Create(
             Orig->getFunctionType(),
-            GlobalValue::InternalLinkage, // Internal linkage
-            Orig->getName() + "_wrapper",
-            &M);
-        Wrapper->copyAttributesFrom(Orig);
+            GlobalValue::InternalLinkage,
+            wrapperName, &M);
 
-        // Set up basic blocks
+        size_t argIdx = 0;
+        for (auto &Arg : Wrapper->args())
+        {
+            if (argIdx < Orig->arg_size())
+            {
+                Arg.setName(Orig->getArg(argIdx)->getName());
+            }
+            argIdx++;
+        }
+
+        LLVMContext &Ctx = M.getContext();
+        IRBuilder<> Builder(Ctx);
+
         BasicBlock *Entry = BasicBlock::Create(Ctx, "entry", Wrapper);
-        BasicBlock *WarmupPhaseBB = BasicBlock::Create(Ctx, "warmup_phase", Wrapper);
-        BasicBlock *ProfilingPhaseBB = BasicBlock::Create(Ctx, "profiling_phase", Wrapper);
+        BasicBlock *WarmupBB = BasicBlock::Create(Ctx, "warmup", Wrapper);
+        BasicBlock *ProfilingBB = BasicBlock::Create(Ctx, "profiling", Wrapper);
         BasicBlock *OptimalPhaseBB = BasicBlock::Create(Ctx, "optimal_phase", Wrapper);
-        BasicBlock *UpdateStatsBB = BasicBlock::Create(Ctx, "update_stats", Wrapper);
-        BasicBlock *TransitionToProfilingBB = BasicBlock::Create(Ctx, "transition_to_profiling", Wrapper);
-        BasicBlock *TransitionToOptimalBB = BasicBlock::Create(Ctx, "transition_to_optimal", Wrapper);
 
-        IRBuilder<> Builder(Entry);
+        Builder.SetInsertPoint(Entry);
 
-        // Types and constants
         Type *i32Ty = Type::getInt32Ty(Ctx);
-        Type *i64Ty = Type::getInt64Ty(Ctx);
-        // Constants
-        ConstantInt *zero32 = cast<ConstantInt>(ConstantInt::get(i32Ty, 0));
-        ConstantInt *one32 = cast<ConstantInt>(ConstantInt::get(i32Ty, 1));
-        ConstantInt *two32 = cast<ConstantInt>(ConstantInt::get(i32Ty, 2));
-        ConstantInt *warmupThreshold = cast<ConstantInt>(ConstantInt::get(i32Ty, config.warmupRuns * 4)); // Total warmup runs
-        ConstantInt *profilingThreshold = cast<ConstantInt>(ConstantInt::get(i32Ty, config.profilingThreshold));
-        ConstantInt *sampleRate = cast<ConstantInt>(ConstantInt::get(i32Ty, config.sampleRate));
-
-        // Get printf for debugging
-        FunctionType *PrintfType = FunctionType::get(i32Ty,
-                                                     {PointerType::get(Type::getInt8Ty(Ctx), 0)}, true);
-        FunctionCallee Printf = M.getOrInsertFunction("printf", PrintfType);
-        Value *FuncName = Builder.CreateGlobalStringPtr(Orig->getName().str());
-
-        // Entry: Check current phase
         LoadInst *PhaseLoad = Builder.CreateLoad(i32Ty, metadata.currentPhase);
         PhaseLoad->setAtomic(AtomicOrdering::Acquire);
         PhaseLoad->setAlignment(Align(4));
 
-        // Branch based on phase
-        SwitchInst *PhaseSwitch = Builder.CreateSwitch(PhaseLoad, OptimalPhaseBB, 3);
-        PhaseSwitch->addCase(zero32, WarmupPhaseBB);
-        PhaseSwitch->addCase(one32, ProfilingPhaseBB);
-        PhaseSwitch->addCase(two32, OptimalPhaseBB);
+        SwitchInst *PhaseSwitch = Builder.CreateSwitch(PhaseLoad, WarmupBB, 3);
+        PhaseSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 0)), WarmupBB);
+        PhaseSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 1)), ProfilingBB);
+        PhaseSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 2)), OptimalPhaseBB);
 
-        const int NUM_VERSIONS = 4;
-
-        // Warmpup phase
-        Builder.SetInsertPoint(WarmupPhaseBB);
+        Builder.SetInsertPoint(WarmupBB);
         {
-            // Increment warmup counter
-            Value *WarmupCount = Builder.CreateAtomicRMW(
-                AtomicRMWInst::Add, metadata.warmupCounter, one32,
-                MaybeAlign(4), AtomicOrdering::SequentiallyConsistent);
-
-            // Calculate which version to run (round-robin during warmup)
-            Value *VersionToRun = Builder.CreateURem(WarmupCount, ConstantInt::get(i32Ty, NUM_VERSIONS));
-
-            // Store current version
-            StoreInst *VersionStore = Builder.CreateStore(VersionToRun, metadata.currentVersion);
-            VersionStore->setAtomic(AtomicOrdering::Release);
-            VersionStore->setAlignment(Align(4));
-
-            // Check if warmup is complete
-            Value *IsWarmupComplete = Builder.CreateICmpUGE(WarmupCount, warmupThreshold);
-            Builder.CreateCondBr(IsWarmupComplete, TransitionToProfilingBB, UpdateStatsBB);
-        }
-
-        // Transition to Profiling
-        Builder.SetInsertPoint(TransitionToProfilingBB);
-        {
-            // Use atomic CAS to ensure only ONE thread performs transition
-            BasicBlock *DoWarmupTransitionBB = BasicBlock::Create(Ctx, "do_warmup_transition", Wrapper);
-            BasicBlock *AlreadyInProfilingBB = BasicBlock::Create(Ctx, "already_in_profiling", Wrapper);
-
-            // Attempt atomic compare-exchange: if currentPhase == 0, set it to 1
-            AtomicCmpXchgInst *CASWarmup = Builder.CreateAtomicCmpXchg(
-                metadata.currentPhase, zero32, one32,
-                MaybeAlign(4),
-                AtomicOrdering::SequentiallyConsistent,
-                AtomicOrdering::SequentiallyConsistent);
-            CASWarmup->setWeak(false); // Strong CAS
-
-            // Extract the success flag from the result
-            Value *CASWarmupResult = Builder.CreateExtractValue(CASWarmup, 1);
-            Builder.CreateCondBr(CASWarmupResult, DoWarmupTransitionBB, AlreadyInProfilingBB);
-
-            // If CAS failed, another thread already transitioned - go to profiling
-            Builder.SetInsertPoint(AlreadyInProfilingBB);
-            Builder.CreateBr(ProfilingPhaseBB);
-
-            // Only the winning thread performs the transition
-            Builder.SetInsertPoint(DoWarmupTransitionBB);
-
-            // Print transition message
-            Value *TransMsg = Builder.CreateGlobalStringPtr(
-                "[WARMUP COMPLETE] %s - Transitioning to profiling phase after %d warmup runs\n");
-            Builder.CreateCall(Printf, {TransMsg, FuncName, warmupThreshold});
-
-            // Phase already updated by CAS above - no need to update again
-
-            // Reset counters for profiling phase
-            StoreInst *ResetProfile = Builder.CreateStore(zero32, metadata.profileCounter);
-            ResetProfile->setAtomic(AtomicOrdering::Release);
-            ResetProfile->setAlignment(Align(4));
-
-            Builder.CreateBr(ProfilingPhaseBB);
-        }
-
-        // Profiling Phase with Sampling
-        Builder.SetInsertPoint(ProfilingPhaseBB);
-        {
-            // Increment sample counter for sampling decision
-            Value *SampleCount = Builder.CreateAtomicRMW(
-                AtomicRMWInst::Add, metadata.sampleCounter, one32,
-                MaybeAlign(4), AtomicOrdering::SequentiallyConsistent);
-
-            // Check if this call should be sampled (every Nth call)
-            Value *ShouldSample = Builder.CreateICmpEQ(
-                Builder.CreateURem(SampleCount, sampleRate), zero32);
-
-            // Create blocks for sampling decision
-            BasicBlock *DoSampleBB = BasicBlock::Create(Ctx, "do_sample", Wrapper);
-            BasicBlock *SkipSampleBB = BasicBlock::Create(Ctx, "skip_sample", Wrapper);
-            Builder.CreateCondBr(ShouldSample, DoSampleBB, SkipSampleBB);
-
-            // Do Sample Block - measure performance with round-robin version selection
-            Builder.SetInsertPoint(DoSampleBB);
-            {
-                // ROUND-ROBIN VERSION SELECTION with atomic operations to prevent race conditions
-                // Atomically get next version counter value and increment it
-                // Using fetch_add ensures each thread gets a unique counter value
-                Value *VersionCounter = Builder.CreateAtomicRMW(
-                    AtomicRMWInst::Add, metadata.currentVersion, one32,
-                    MaybeAlign(4), AtomicOrdering::SequentiallyConsistent);
-                
-                // Apply modulo 4 to wrap around: v0->v1->v2->v3->v4->v5->v0->v1...
-                Value *SelectedVersion = Builder.CreateURem(VersionCounter,
-                                                           ConstantInt::get(i32Ty, NUM_VERSIONS));
-
-                // Create blocks for round-robin checking
-                BasicBlock *RoundRobinStartBB = BasicBlock::Create(Ctx, "roundrobin_start", Wrapper);
-                Builder.CreateBr(RoundRobinStartBB);
-                
-                Builder.SetInsertPoint(RoundRobinStartBB);
-                
-                // Try up to NUM_VERSIONS times in round-robin fashion to find a version under 200 runs
-                BasicBlock *CheckVersionBBs[NUM_VERSIONS];
-                for (int i = 0; i < NUM_VERSIONS; i++)
-                {
-                    CheckVersionBBs[i] = BasicBlock::Create(Ctx, "roundrobin_check" + std::to_string(i), Wrapper);
-                }
-                
-                Builder.CreateBr(CheckVersionBBs[0]);
-                
-                // Check each version in round-robin order
-                for (int attempt = 0; attempt < NUM_VERSIONS; attempt++)
-                {
-                    Builder.SetInsertPoint(CheckVersionBBs[attempt]);
-                    
-                    // Calculate which version to try: (SelectedVersion + attempt) % NUM_VERSIONS
-                    Value *VersionToTry = Builder.CreateURem(
-                        Builder.CreateAdd(SelectedVersion, ConstantInt::get(i32Ty, attempt)),
-                        ConstantInt::get(i32Ty, NUM_VERSIONS));
-                    
-                    // Create switch statement to dispatch to correct version check
-                    BasicBlock *VersionCheckBBs[NUM_VERSIONS];
-                    for (int v = 0; v < NUM_VERSIONS; v++)
-                    {
-                        VersionCheckBBs[v] = BasicBlock::Create(Ctx, 
-                            "check_v" + std::to_string(v) + "_attempt" + std::to_string(attempt), Wrapper);
-                    }
-                    
-                    SwitchInst *VersionSwitch = Builder.CreateSwitch(VersionToTry, VersionCheckBBs[0], NUM_VERSIONS);
-                    
-                    for (int v = 0; v < NUM_VERSIONS; v++)
-                    {
-                        VersionSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, v)), VersionCheckBBs[v]);
-                        
-                        Builder.SetInsertPoint(VersionCheckBBs[v]);
-                        
-                        // Atomically try to claim a run for this version
-                        Value *OldRunCount = Builder.CreateAtomicRMW(
-                            AtomicRMWInst::Add, metadata.runCount[v], one32,
-                            MaybeAlign(4), AtomicOrdering::SequentiallyConsistent);
-                        
-                        // Check if this version still needs runs (old count < 200)
-                        Value *NeedsRun = Builder.CreateICmpULT(OldRunCount, ConstantInt::get(i32Ty, (config.profilingThreshold/4)));
-                        
-                        BasicBlock *UseVersionBB = BasicBlock::Create(Ctx, 
-                            "use_v" + std::to_string(v) + "_attempt" + std::to_string(attempt), Wrapper);
-                        
-                        // Create unique decrement block for this specific version
-                        BasicBlock *DecrementVersionBB = BasicBlock::Create(Ctx, 
-                            "decrement_v" + std::to_string(v) + "_attempt" + std::to_string(attempt), Wrapper);
-                        
-                        Builder.CreateCondBr(NeedsRun, UseVersionBB, DecrementVersionBB);
-                        
-                        // Use this version - store it and profile
-                        Builder.SetInsertPoint(UseVersionBB);
-                        StoreInst *VersionStore = Builder.CreateStore(ConstantInt::get(i32Ty, v), metadata.currentVersion);
-                        VersionStore->setAtomic(AtomicOrdering::Release);
-                        VersionStore->setAlignment(Align(4));
-                        Builder.CreateBr(UpdateStatsBB);
-                        
-                        // Didn't use this version - decrement back in version-specific block
-                        Builder.SetInsertPoint(DecrementVersionBB);
-                        Builder.CreateAtomicRMW(
-                            AtomicRMWInst::Sub, metadata.runCount[v], one32,
-                            MaybeAlign(4), AtomicOrdering::SequentiallyConsistent);
-                        
-                        // After decrement, either try next attempt or transition to optimal
-                        if (attempt < NUM_VERSIONS - 1)
-                        {
-                            Builder.CreateBr(CheckVersionBBs[attempt + 1]);
-                        }
-                        else
-                        {
-                            // All versions are full - transition to optimal phase
-                            Builder.CreateBr(TransitionToOptimalBB);
-                        }
-                    }
-                }
-            }
-
-            // Skip Sample Block - run current best or default version without measurement
-            Builder.SetInsertPoint(SkipSampleBB);
-            {
-                // Load current version (last profiled version or default)
-                LoadInst *CurrentVersionLoad = Builder.CreateLoad(i32Ty, metadata.currentVersion);
-                CurrentVersionLoad->setAtomic(AtomicOrdering::Acquire);
-                CurrentVersionLoad->setAlignment(Align(4));
-
-                // Dispatch to current version without timing
-                std::vector<Value *> VersionFuncs;
-                for (int i = 0; i < NUM_VERSIONS; i++)
-                {
-                    VersionFuncs.push_back(Builder.CreatePointerCast(
-                        metadata.versions[i], Orig->getFunctionType()->getPointerTo()));
-                }
-
-                Value *FuncPtr = VersionFuncs[0];
-                for (int i = 1; i < NUM_VERSIONS; i++)
-                {
-                    Value *IsVersionI = Builder.CreateICmpEQ(CurrentVersionLoad, ConstantInt::get(i32Ty, i));
-                    FuncPtr = Builder.CreateSelect(IsVersionI, VersionFuncs[i], FuncPtr);
-                }
-
-                std::vector<Value *> Args;
-                for (auto &Arg : Wrapper->args())
-                    Args.push_back(&Arg);
-
-                if (Orig->getReturnType()->isVoidTy())
-                {
-                    Builder.CreateCall(Orig->getFunctionType(), FuncPtr, Args);
-                    Builder.CreateRetVoid();
-                }
-                else
-                {
-                    Value *Result = Builder.CreateCall(Orig->getFunctionType(), FuncPtr, Args);
-                    Builder.CreateRet(Result);
-                }
-            }
-        }
-
-        // Update Stats Block (for sampled profiling calls and warmup)
-        Builder.SetInsertPoint(UpdateStatsBB);
-        {
-            // Load the current version
-            LoadInst *CurrentVersionLoad = Builder.CreateLoad(i32Ty, metadata.currentVersion);
-            CurrentVersionLoad->setAtomic(AtomicOrdering::Acquire);
-            CurrentVersionLoad->setAlignment(Align(4));
-
-            // Load current phase to determine if we should measure
-            LoadInst *CurrentPhaseLoad = Builder.CreateLoad(i32Ty, metadata.currentPhase);
-            CurrentPhaseLoad->setAtomic(AtomicOrdering::Acquire);
-            CurrentPhaseLoad->setAlignment(Align(4));
-
-            // Only measure during profiling phase (not warmup)
-            Value *IsProfilingPhase = Builder.CreateICmpEQ(CurrentPhaseLoad, one32);
-
-            // Create dispatch logic with optional timing
-            std::vector<Value *> VersionFuncs;
-            for (int i = 0; i < NUM_VERSIONS; i++)
-            {
-                VersionFuncs.push_back(Builder.CreatePointerCast(
-                    metadata.versions[i], Orig->getFunctionType()->getPointerTo()));
-            }
-
-            // Get RDTSC inline assembly for x86-64
-            /*
-            FunctionType *RdtscType = FunctionType::get(i64Ty, {}, false);
-            InlineAsm *Rdtsc = InlineAsm::get(RdtscType,
-                                             "rdtsc; shl $$32, %rdx; or %rdx, %rax",
-                                             "=A,~{rdx}", false);
-            */
-            Function *ReadCycleCounter = Intrinsic::getDeclaration(&M, Intrinsic::readcyclecounter);
-
-            // Conditional timing based on phase
-            BasicBlock *MeasureBB = BasicBlock::Create(Ctx, "measure", Wrapper);
-            BasicBlock *NoMeasureBB = BasicBlock::Create(Ctx, "no_measure", Wrapper);
-            BasicBlock *UpdateDispatchBB = BasicBlock::Create(Ctx, "update_dispatch", Wrapper);
-            BasicBlock *ContinueBB = BasicBlock::Create(Ctx, "continue", Wrapper);
-
-            std::vector<Value *> WrapperArgs;
+            std::vector<Value *> Args;
             for (auto &Arg : Wrapper->args())
-                WrapperArgs.push_back(&Arg);
-
-            Value *MeasuredResult = nullptr;
-            Value *NoMeasureResult = nullptr;
-            std::vector<BasicBlock *> UpdateBlocks;
-            UpdateBlocks.reserve(NUM_VERSIONS + 1);
-
-            Builder.CreateCondBr(IsProfilingPhase, MeasureBB, NoMeasureBB);
-
-            // Measure block - with timing
-            Builder.SetInsertPoint(MeasureBB);
-            Value *StartCycles = Builder.CreateCall(ReadCycleCounter);
-
-            Value *FuncPtrMeasure = VersionFuncs[0];
-            for (int i = 1; i < NUM_VERSIONS; i++)
-            {
-                Value *IsVersionI = Builder.CreateICmpEQ(CurrentVersionLoad, ConstantInt::get(i32Ty, i));
-                FuncPtrMeasure = Builder.CreateSelect(IsVersionI, VersionFuncs[i], FuncPtrMeasure);
-            }
+                Args.push_back(&Arg);
 
             if (Orig->getReturnType()->isVoidTy())
             {
-                Builder.CreateCall(Orig->getFunctionType(), FuncPtrMeasure, WrapperArgs);
-            }
-            else
-            {
-                MeasuredResult = Builder.CreateCall(Orig->getFunctionType(), FuncPtrMeasure, WrapperArgs);
-            }
-
-            Value *EndCycles = Builder.CreateCall(ReadCycleCounter);
-            Value *ElapsedCycles = Builder.CreateSub(EndCycles, StartCycles);
-
-            Builder.CreateBr(UpdateDispatchBB);
-
-            // Update statistics dispatch
-            Builder.SetInsertPoint(UpdateDispatchBB);
-            BasicBlock *DefaultUpdateBB = BasicBlock::Create(Ctx, "update_default", Wrapper);
-            SwitchInst *VersionSwitch = Builder.CreateSwitch(CurrentVersionLoad, DefaultUpdateBB, NUM_VERSIONS);
-
-            Builder.SetInsertPoint(DefaultUpdateBB);
-            UpdateBlocks.push_back(DefaultUpdateBB);
-            Builder.CreateBr(ContinueBB);
-
-            for (int i = 0; i < NUM_VERSIONS; i++)
-            {
-                BasicBlock *UpdateVersionBB = BasicBlock::Create(Ctx, "update_v" + std::to_string(i), Wrapper);
-                VersionSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, i)), UpdateVersionBB);
-                Builder.SetInsertPoint(UpdateVersionBB);
-                // Atomic add for cycles (runCount already incremented in DoSampleBB)
-                Builder.CreateAtomicRMW(AtomicRMWInst::Add, metadata.cpuCycles[i],
-                                        ElapsedCycles, MaybeAlign(8), AtomicOrdering::SequentiallyConsistent);
-                Builder.CreateBr(ContinueBB);
-                UpdateBlocks.push_back(UpdateVersionBB);
-            }
-
-            // No measure block - warmup execution without timing
-            Builder.SetInsertPoint(NoMeasureBB);
-            Value *FuncPtrNoMeasure = VersionFuncs[0];
-            for (int i = 1; i < NUM_VERSIONS; i++)
-            {
-                Value *IsVersionI = Builder.CreateICmpEQ(CurrentVersionLoad, ConstantInt::get(i32Ty, i));
-                FuncPtrNoMeasure = Builder.CreateSelect(IsVersionI, VersionFuncs[i], FuncPtrNoMeasure);
-            }
-
-            if (Orig->getReturnType()->isVoidTy())
-            {
-                Builder.CreateCall(Orig->getFunctionType(), FuncPtrNoMeasure, WrapperArgs);
-            }
-            else
-            {
-                NoMeasureResult = Builder.CreateCall(Orig->getFunctionType(), FuncPtrNoMeasure, WrapperArgs);
-            }
-            Builder.CreateBr(ContinueBB);
-
-            // Continue block
-            Builder.SetInsertPoint(ContinueBB);
-            if (!Orig->getReturnType()->isVoidTy())
-            {
-                PHINode *ResultPhi = Builder.CreatePHI(Orig->getReturnType(), UpdateBlocks.size() + 1);
-                for (BasicBlock *Pred : UpdateBlocks)
-                {
-                    ResultPhi->addIncoming(MeasuredResult, Pred);
-                }
-                ResultPhi->addIncoming(NoMeasureResult, NoMeasureBB);
-                Builder.CreateRet(ResultPhi);
-            }
-            else
-            {
+                Builder.CreateCall(metadata.versions[0]->getFunctionType(),
+                                   metadata.versions[0], Args);
                 Builder.CreateRetVoid();
             }
+            else
+            {
+                Value *Result = Builder.CreateCall(metadata.versions[0]->getFunctionType(),
+                                                   metadata.versions[0], Args);
+                Builder.CreateRet(Result);
+            }
         }
 
-        // Key change: Transition to Optimal
-        Builder.SetInsertPoint(TransitionToOptimalBB);
+        Builder.SetInsertPoint(ProfilingBB);
         {
-            // Use atomic CAS to ensure only ONE thread performs transition
-            BasicBlock *DoTransitionBB = BasicBlock::Create(Ctx, "do_transition", Wrapper);
-            BasicBlock *AlreadyTransitionedBB = BasicBlock::Create(Ctx, "already_transitioned", Wrapper);
+            std::vector<Value *> Args;
+            for (auto &Arg : Wrapper->args())
+                Args.push_back(&Arg);
 
-            // Attempt atomic compare-exchange: if currentPhase == 1, set it to 2
-            AtomicCmpXchgInst *CAS = Builder.CreateAtomicCmpXchg(
-                metadata.currentPhase, one32, two32,
-                MaybeAlign(4),
-                AtomicOrdering::SequentiallyConsistent,
-                AtomicOrdering::SequentiallyConsistent);
-            CAS->setWeak(false); // Strong CAS
-
-            // Extract the success flag from the result
-            Value *CASResult = Builder.CreateExtractValue(CAS, 1);
-            Builder.CreateCondBr(CASResult, DoTransitionBB, AlreadyTransitionedBB);
-
-            // If CAS failed, another thread already transitioned - go to optimal
-            Builder.SetInsertPoint(AlreadyTransitionedBB);
-            Builder.CreateBr(OptimalPhaseBB);
-
-            // Only the winning thread performs the transition
-            Builder.SetInsertPoint(DoTransitionBB);
-
-            // Load all version data
-            std::vector<Value *> CurrentCycles;
-            std::vector<Value *> CurrentRuns;
-            for (int i = 0; i < NUM_VERSIONS; i++)
+            if (Orig->getReturnType()->isVoidTy())
             {
-                LoadInst *CyclesLoad = Builder.CreateLoad(i64Ty, metadata.cpuCycles[i]);
-                CyclesLoad->setAtomic(AtomicOrdering::Acquire);
-                CyclesLoad->setAlignment(Align(8));
-                CurrentCycles.push_back(CyclesLoad);
-
-                LoadInst *RunsLoad = Builder.CreateLoad(i32Ty, metadata.runCount[i]);
-                RunsLoad->setAtomic(AtomicOrdering::Acquire);
-                RunsLoad->setAlignment(Align(4));
-                CurrentRuns.push_back(RunsLoad);
+                Builder.CreateCall(metadata.versions[0]->getFunctionType(),
+                                   metadata.versions[0], Args);
+                Builder.CreateRetVoid();
             }
-
-            // Find best version
-            Value *BestVersion = zero32;
-            Value *BestAvg = nullptr;
-
-            for (int i = 0; i < NUM_VERSIONS; i++)
+            else
             {
-                Value *HasRuns = Builder.CreateICmpUGT(CurrentRuns[i], zero32);
-                Value *CyclesFloat = Builder.CreateUIToFP(CurrentCycles[i], Builder.getDoubleTy());
-                Value *RunsFloat = Builder.CreateUIToFP(CurrentRuns[i], Builder.getDoubleTy());
-                Value *SafeRunsFloat = Builder.CreateSelect(
-                    HasRuns, RunsFloat,
-                    ConstantFP::get(Builder.getDoubleTy(), 1.0));
-                Value *AvgFloat = Builder.CreateFDiv(CyclesFloat, SafeRunsFloat);
-                Value *MaxValFloat = ConstantFP::get(Builder.getDoubleTy(),
-                                                     std::numeric_limits<double>::max());
-                Value *FinalAvg = Builder.CreateSelect(HasRuns, AvgFloat, MaxValFloat);
-
-                if (i == 0)
-                {
-                    BestAvg = FinalAvg;
-                    BestVersion = ConstantInt::get(i32Ty, 0);
-                }
-                else
-                {
-                    Value *IsBetter = Builder.CreateFCmpOLT(FinalAvg, BestAvg);
-                    BestVersion = Builder.CreateSelect(IsBetter,
-                                                       ConstantInt::get(i32Ty, i), BestVersion);
-                    BestAvg = Builder.CreateSelect(IsBetter, FinalAvg, BestAvg);
-                }
-
-                // Print stats
-                Value *AvgForDisplay = Builder.CreateFPToUI(FinalAvg, i64Ty);
-                Value *StatsMsg = Builder.CreateGlobalStringPtr(
-                    "[STATS] %s - V%d: total_cycles=%llu, runs=%u, avg=%llu\n");
-                Builder.CreateCall(Printf, {StatsMsg, FuncName,
-                                            ConstantInt::get(i32Ty, i),
-                                            CurrentCycles[i], CurrentRuns[i], AvgForDisplay});
+                Value *Result = Builder.CreateCall(metadata.versions[0]->getFunctionType(),
+                                                   metadata.versions[0], Args);
+                Builder.CreateRet(Result);
             }
-
-            // Store best version
-            StoreInst *BestStore = Builder.CreateStore(BestVersion, metadata.bestVersion);
-            BestStore->setAtomic(AtomicOrdering::Release);
-            BestStore->setAlignment(Align(4));
-
-            // Phase already updated by CAS above - no need to update again
-
-            // Create blocks for each version
-            BasicBlock *PatchDoneBB = BasicBlock::Create(Ctx, "patch_done", Wrapper);
-            BasicBlock *DefaultPatchBB = BasicBlock::Create(Ctx, "default_patch", Wrapper);
-
-            SwitchInst *PatchSwitch = Builder.CreateSwitch(BestVersion, DefaultPatchBB, 4);
-
-            for (int i = 0; i < NUM_VERSIONS; i++)
-            {
-                BasicBlock *PatchBB = BasicBlock::Create(Ctx,
-                                                         "patch_v" + std::to_string(i), Wrapper);
-                PatchSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, i)), PatchBB);
-
-                Builder.SetInsertPoint(PatchBB);
-
-                // Patch the function pointer to point directly to the best version
-                Value *VersionPtr = Builder.CreatePointerCast(
-                    metadata.versions[i],
-                    metadata.original->getFunctionType()->getPointerTo());
-
-                StoreInst *PatchStore = Builder.CreateStore(VersionPtr, metadata.functionPtr);
-                PatchStore->setAtomic(AtomicOrdering::Release);
-                PatchStore->setAlignment(Align(8));
-
-                // Print patch message
-                Value *PatchMsg = Builder.CreateGlobalStringPtr(
-                    "[PATCH] %s - Function pointer patched to V%d, wrapper bypassed!\n");
-                Builder.CreateCall(Printf, {PatchMsg, FuncName, ConstantInt::get(i32Ty, i)});
-
-                Builder.CreateBr(PatchDoneBB);
-            }
-
-            Builder.SetInsertPoint(DefaultPatchBB);
-            Builder.CreateBr(PatchDoneBB);
-
-            Builder.SetInsertPoint(PatchDoneBB);
-            Builder.CreateBr(OptimalPhaseBB);
         }
 
-        // Optimal Phase: Call best version (only used once before patching)
         Builder.SetInsertPoint(OptimalPhaseBB);
         {
             LoadInst *BestLoad = Builder.CreateLoad(i32Ty, metadata.bestVersion);
@@ -942,14 +593,14 @@ namespace llvm
             BestLoad->setAlignment(Align(4));
 
             std::vector<Value *> VersionFuncs;
-            for (int i = 0; i < NUM_VERSIONS; i++)
+            for (int i = 0; i < 4; i++)
             {
                 VersionFuncs.push_back(Builder.CreatePointerCast(
                     metadata.versions[i], Orig->getFunctionType()->getPointerTo()));
             }
 
             Value *FuncPtr = VersionFuncs[0];
-            for (int i = 1; i < NUM_VERSIONS; i++)
+            for (int i = 1; i < 4; i++)
             {
                 Value *IsBestVersionI = Builder.CreateICmpEQ(BestLoad,
                                                              ConstantInt::get(i32Ty, i));
@@ -988,26 +639,25 @@ namespace llvm
         BasicBlock *Entry = BasicBlock::Create(Ctx, "entry", InitFunc);
         IRBuilder<> Builder(Entry);
 
-        // Print initialization message
         FunctionType *PrintfType = FunctionType::get(Type::getInt32Ty(Ctx),
                                                      {PointerType::get(Type::getInt8Ty(Ctx), 0)}, true);
         FunctionCallee Printf = M.getOrInsertFunction("printf", PrintfType);
-        // NEW: Print group configurations
+
         Value *GroupHeaderMsg = Builder.CreateGlobalStringPtr(
             "[INIT] Adaptive dispatcher with MANUAL GROUP CONFIGURATIONS initialized:\n");
         Builder.CreateCall(Printf, {GroupHeaderMsg});
-        
-        // Print each group configuration
-        for (const auto& [groupName, config] : FUNCTION_GROUPS) {
+
+        for (const auto &[groupName, config] : FUNCTION_GROUPS)
+        {
             Value *GroupMsg = Builder.CreateGlobalStringPtr(
                 "  - Group %s: Warmup=%d, Sample Rate=1/%d, Threshold=%d (%s)\n");
             Value *GroupNameStr = Builder.CreateGlobalStringPtr(groupName);
             Value *DescStr = Builder.CreateGlobalStringPtr(config.description);
-            Builder.CreateCall(Printf, {GroupMsg, GroupNameStr, 
-                                       ConstantInt::get(Type::getInt32Ty(Ctx), config.warmupRuns),
-                                       ConstantInt::get(Type::getInt32Ty(Ctx), config.sampleRate),
-                                       ConstantInt::get(Type::getInt32Ty(Ctx), config.profilingThreshold),
-                                       DescStr});
+            Builder.CreateCall(Printf, {GroupMsg, GroupNameStr,
+                                        ConstantInt::get(Type::getInt32Ty(Ctx), config.warmupRuns),
+                                        ConstantInt::get(Type::getInt32Ty(Ctx), config.sampleRate),
+                                        ConstantInt::get(Type::getInt32Ty(Ctx), config.profilingThreshold),
+                                        DescStr});
         }
         Builder.CreateRetVoid();
 
