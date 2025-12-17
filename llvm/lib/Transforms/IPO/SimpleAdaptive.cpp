@@ -291,8 +291,6 @@ namespace llvm
             case 2: // V2: LOOP OPTIMIZED - Aggressive Unroll/Scalar (Forcing non-AVX)
                 // Explicitly disable wider vectorization to force differentiation
                 NewF->addFnAttr(Attribute::NoInline);
-                NewF->addFnAttr("target-features", "-avx512f");
-                NewF->addFnAttr("prefer-vector-width", "128");
                 NewF->addFnAttr("unroll-count", "16");
                 NewF->addFnAttr("unroll-full-unroll-max", "1024");
                 NewF->addFnAttr("interleave-count", "4");
