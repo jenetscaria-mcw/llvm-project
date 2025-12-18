@@ -4543,7 +4543,19 @@ static void handleMinSizeAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
 }
 
 static void handleAdaptiveAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
-  D->addAttr(::new (S.Context) AdaptiveAttr(S.Context, AL));
+  unsigned Count = 0;
+  
+  if (AL.getNumArgs() >= 1) {
+    Expr *E = AL.getArgAsExpr(0);
+    if (E) {
+      Expr::EvalResult Result;
+      if (E->EvaluateAsInt(Result, S.Context)) {
+        Count = Result.Val.getInt().getZExtValue();
+      }
+    }
+  }
+  
+  D->addAttr(::new (S.Context) AdaptiveAttr(S.Context, AL, Count));
 }
 
 static void handleOptimizeNoneAttr(Sema &S, Decl *D, const ParsedAttr &AL) {

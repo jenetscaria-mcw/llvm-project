@@ -2594,8 +2594,10 @@ void CodeGenModule::SetLLVMFunctionAttributesForDefinition(const Decl *D,
     }
   }
   if (const auto *FD = dyn_cast<FunctionDecl>(D)) {
-    if (FD->hasAttr<AdaptiveAttr>()) {
-      F->addFnAttr(llvm::Attribute::get(F->getContext(), "adaptive"));
+    if (const auto *AA = FD->getAttr<AdaptiveAttr>()) {
+      // AA->getCount() is the integer from adaptive(<N>)
+      std::string ValStr = std::to_string(AA->getCount());
+      F->addFnAttr(llvm::Attribute::get(F->getContext(), "adaptive", ValStr));
     }
   }
 }

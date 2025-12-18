@@ -10,36 +10,30 @@
 #include "llvm/Support/raw_ostream.h"
 #include <map>
 #include <vector>
+#include <algorithm>
 
 using namespace llvm;
 
 namespace llvm
 {
 
-    struct FunctionGroupConfig {
+    struct FunctionGroupConfig
+    {
         int warmupRuns;
         int sampleRate;
         int profilingThreshold;
         std::string description;
     };
-    
-    // Function group configurations - UPDATED with your requirements
-    static std::map<std::string, FunctionGroupConfig> FUNCTION_GROUPS = {
-        {"HIGH_FREQUENCY", {10, 10, 49998, "Functions with millions of calls"}},
-        {"MEDIUM_FREQUENCY", {10, 5, 5010, "Functions with 10k-1M calls"}},
-        {"LOW_FREQUENCY", {10, 2, 510, "Functions with less than 10k calls"}}
-    };
 
-    // Default configuration
-    static const FunctionGroupConfig DEFAULT_CONFIG = {10, 2, 1200, "Default configuration"};
+    // Function group configurations - UPDATED with your requirements
 
     struct FunctionMetadata
     {
         Function *original;
         Function *versions[4]; // v0 to v5
         Function *wrapper;
-        Function *dispatcher; // Dispatcher function
-        std::string groupName; // NEW: Store which group this function belongs to       
+        Function *dispatcher;  // Dispatcher function
+        FunctionGroupConfig config; // Store per-function config
 
         // Per-function static globals for adaptive runtime tracking
         GlobalVariable *callCounter;    // total call count
@@ -54,6 +48,118 @@ namespace llvm
         GlobalVariable *functionPtr;    // Function pointer for direct dispatch either wrapper or best function
     };
 
+    // Extract expected call count from function attributes / metadata
+    static uint64_t getExpectedCallCount(Function *F)
+    {
+        // Method 1: Check for a direct function attribute: __attribute__((adaptive(N)))
+        //
+        // Frontend is expected to lower this to an LLVM function attribute
+        //    "adaptive" = "388"
+        //
+        // Example C/C++:
+        //    __attribute__((adaptive(388)))
+        //    void foo();
+        if (F->hasFnAttribute("adaptive"))
+        {
+            Attribute Attr = F->getFnAttribute("adaptive");
+            StringRef Val = Attr.getValueAsString(); // e.g. "388"
+            uint64_t Count = 0;
+            if (!Val.empty() && !Val.getAsInteger(10, Count))
+                return Count;
+        }
+
+        // Method 2: Check for annotate("adaptive:N") metadata format
+        if (F->hasMetadata())
+        {
+            if (MDNode *MD = F->getMetadata("annotation"))
+            {
+                for (unsigned i = 0; i < MD->getNumOperands(); i++)
+                {
+                    if (MDString *MDS = dyn_cast<MDString>(MD->getOperand(i)))
+                    {
+                        StringRef anno = MDS->getString();
+                        if (anno.starts_with("adaptive:"))
+                        {
+                            uint64_t count;
+                            if (!anno.substr(9).getAsInteger(10, count))
+                            {
+                                return count;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Method 3: Check for PGO entry count
+        if (auto EntryCount = F->getEntryCount())
+        {
+            return EntryCount->getCount();
+        }
+
+        // Method 4: Estimate from function complexity (fallback)
+        size_t numInstructions = 0;
+        for (auto &BB : *F)
+        {
+            numInstructions += BB.size();
+        }
+
+        if (numInstructions < 30)
+            return 100000;
+        else if (numInstructions < 100)
+            return 50000;
+        else if (numInstructions < 300)
+            return 10000;
+        else
+            return 1000;
+    }
+
+    // Calculate dynamic thresholds based on expected call count
+    static FunctionGroupConfig calculateDynamicThresholds(uint64_t expectedCalls, const std::string &source)
+    {
+        FunctionGroupConfig config;
+
+        // Configuration parameters
+        const uint64_t MIN_PROFILE_SAMPLES = 400;
+        const uint64_t MAX_PROFILE_SAMPLES = 20000;
+        const double PROFILE_PERCENTAGE = 0.03;
+        const double WARMUP_PERCENTAGE = 0.10;
+
+        // Calculate target profiling samples (3% of total calls)
+        uint64_t targetSamples = (uint64_t)(expectedCalls * PROFILE_PERCENTAGE);
+
+        // Clamp to reasonable range
+        targetSamples = std::max(targetSamples, MIN_PROFILE_SAMPLES);
+        targetSamples = std::min(targetSamples, MAX_PROFILE_SAMPLES);
+
+        // Ensure divisible by 4 (we have 4 versions)
+        targetSamples = (targetSamples / 4) * 4;
+
+        config.profilingThreshold = (int)targetSamples;
+
+        // Calculate warmup runs (10% of profiling samples)
+        config.warmupRuns = std::max(40, (int)(targetSamples * WARMUP_PERCENTAGE));
+        config.warmupRuns = std::min(config.warmupRuns, 200);
+
+        // Calculate sample rate
+        if (expectedCalls > targetSamples * 2)
+        {
+            config.sampleRate = (int)(expectedCalls / targetSamples);
+        }
+        else
+        {
+            config.sampleRate = 1;
+        }
+
+        // Ensure sample rate is reasonable
+        config.sampleRate = std::max(1, std::min(config.sampleRate, 1000));
+
+        // Set description
+        config.description = source;
+
+        return config;
+    }
+
     class SimpleAdaptivePassImpl
     {
     private:
@@ -65,12 +171,7 @@ namespace llvm
         Function *createOptimizedDispatchWrapper(FunctionMetadata &metadata, Module &M);
         Function *createThinDispatcher(FunctionMetadata &metadata, Module &M);
         void createInitializationFunction(Module &M);
-        
-        // NEW: Helper functions for group configuration
-        std::string determineFunctionGroup(Function *F);
-        const FunctionGroupConfig& getGroupConfig(const std::string& groupName);
-        void printFunctionGroupInfo(Function *F, const std::string& groupName, 
-                                   const FunctionGroupConfig& config, raw_ostream &OS);
+
 
     public:
         SimpleAdaptivePassImpl() {}
@@ -81,69 +182,6 @@ namespace llvm
     {
         SimpleAdaptivePassImpl impl;
         return impl.run(M, AM);
-    }
-    
-    // NEW: Determine which group a function belongs to based on manual assignments
-    std::string SimpleAdaptivePassImpl::determineFunctionGroup(Function *F)
-    {
-        std::string funcName = F->getName().str();
-        
-        // MANUAL GROUP ASSIGNMENTS BASED ON FUNCTION NAMES
-        // Low frequency group (call count < 10k)
-        if (funcName.find("_ZN12_GLOBAL__N_115tinyBLAS_Q0_AVXI10block_q4_010block_q8_0fE7gemm4xNILi4EEEvllll") != std::string::npos) {
-            return "LOW_FREQUENCY";
-        }
-        
-        // Medium frequency group (call count 10k - 1M)  
-        if (funcName.find("_ZN12_GLOBAL__N_18tinyBLASILi16EDv16_fS1_tffE6mnpackEllll") != std::string::npos ||
-            // funcName.find("gemm<5>") != std::string::npos ||
-            funcName.find("quantize_row_q8_0") != std::string::npos ||
-            funcName.find("ggml_compute_forward_dup") != std::string::npos ||
-            funcName.find("ggml_compute_forward_rope_f32") != std::string::npos) {
-            return "MEDIUM_FREQUENCY";
-        }
-        
-        // High frequency group (call count > 1M)
-        if (funcName.find("ggml_fp32_to_fp16_row") != std::string::npos ||
-            funcName.find("ggml_vec_dot_q4_0_q8_0") != std::string::npos ||
-            funcName.find("ggml_vec_dot_q6_K_q8_K") != std::string::npos ||
-            funcName.find("ggml_vec_dot_f16") != std::string::npos) {
-            return "HIGH_FREQUENCY";
-        }
-        
-        // Check for explicit group attribute (override manual assignments)
-        if (F->hasFnAttribute("adaptive-group")) {
-            Attribute groupAttr = F->getFnAttribute("adaptive-group");
-            std::string groupName = groupAttr.getValueAsString().str();
-            if (FUNCTION_GROUPS.find(groupName) != FUNCTION_GROUPS.end()) {
-                return groupName;
-            }
-        }
-        
-        // Default to medium frequency for any unclassified adaptive functions
-        return "MEDIUM_FREQUENCY";
-    }
-
-    // NEW: Get configuration for a group
-    const FunctionGroupConfig& SimpleAdaptivePassImpl::getGroupConfig(const std::string& groupName)
-    {
-        auto it = FUNCTION_GROUPS.find(groupName);
-        if (it != FUNCTION_GROUPS.end()) {
-            return it->second;
-        }
-        return DEFAULT_CONFIG;
-    }
-
-    // NEW: Print function group information
-    void SimpleAdaptivePassImpl::printFunctionGroupInfo(Function *F, const std::string& groupName, 
-                                                       const FunctionGroupConfig& config, raw_ostream &OS)
-    {
-        OS << "[ADAPTIVE] Function: " << F->getName() 
-           << " | Group: " << groupName 
-           << " | Warmup: " << config.warmupRuns 
-           << " | Sample Rate: 1/" << config.sampleRate
-           << " | Threshold: " << config.profilingThreshold
-           << " | Desc: " << config.description << "\n";
     }
 
     PreservedAnalyses SimpleAdaptivePassImpl::run(Module &M, ModuleAnalysisManager &)
@@ -167,16 +205,43 @@ namespace llvm
         uint32_t funcId = 0;
         for (Function *F : adaptiveFunctions)
         {
-            // NEW: Determine group for this function
-            std::string groupName = determineFunctionGroup(F);
-            const FunctionGroupConfig& config = getGroupConfig(groupName);
-            
-            // Print group information
-            printFunctionGroupInfo(F, groupName, config, errs());
-            processFunctionWithDirectDispatch(F, funcId++, M);
-        }
+            // Calculate dynamic thresholds per function
+            uint64_t expectedCalls = getExpectedCallCount(F);
 
-        createInitializationFunction(M);
+            // Determine source
+            std::string source;
+            if (F->hasMetadata() && F->getMetadata("annotation"))
+            {
+                source = "attribute";
+            }
+            else if (F->getEntryCount())
+            {
+                source = "PGO";
+        }
+        else
+        {
+                source = "estimated";
+            }
+
+            FunctionGroupConfig config = calculateDynamicThresholds(expectedCalls, source);
+
+            // Store config in metadata
+            FunctionMetadata &metadata = functionMap[F];
+            metadata.original = F;
+            metadata.config = config;
+
+            // Print configuration
+            errs() << "[ADAPTIVE] Function: " << F->getName()
+                   << " | Expected calls: " << expectedCalls << " (" << source << ")"
+                   << " | Warmup: " << config.warmupRuns
+                   << " | Sample rate: 1/" << config.sampleRate
+                   << " | Profile threshold: " << config.profilingThreshold
+                   << " (" << (config.profilingThreshold / 4) << " per version)\n";
+
+                processFunctionWithDirectDispatch(F, funcId++, M);
+            }
+
+            createInitializationFunction(M);
 
         return PreservedAnalyses::none();
     }
@@ -267,48 +332,50 @@ namespace llvm
         metadata.currentVersion->setAlignment(Align(4));
     }
 
-    Function *SimpleAdaptivePassImpl::createVersion(Function *F, int versionId, Module &M) {
+    Function *SimpleAdaptivePassImpl::createVersion(Function *F, int versionId, Module &M)
+    {
         ValueToValueMapTy VMap;
         Function *NewF = CloneFunction(F, VMap);
         NewF->setName(F->getName() + "_v" + std::to_string(versionId));
         NewF->setLinkage(GlobalValue::InternalLinkage);
-    
+
         // Apply NoInline to all versions for distinct measurement
         // NewF->addFnAttr(Attribute::NoInline); // Prevents identical optimization by caller
-    
-        switch (versionId) {
-            case 0: // BASELINE - Conservative
-            // errs() << "  V0: Baseline (conservative)\n";
-                break;
-            case 1: // V1: VECTORIZED - Maximum SIMD (Explicit AVX512)
-                NewF->addFnAttr(Attribute::NoInline);
-                NewF->addFnAttr("prefer-vector-width", "512");
-                NewF->addFnAttr("min-legal-vector-width", "512");
-                NewF->addFnAttr("target-features", "+avx512f,+avx512vl");
-                NewF->addFnAttr("vectorize-predicate", "enable");
-                break;
-    
-            case 2: // V2: LOOP OPTIMIZED - Aggressive Unroll/Scalar (Forcing non-AVX)
-                // Explicitly disable wider vectorization to force differentiation
-                NewF->addFnAttr(Attribute::NoInline);
-                NewF->addFnAttr("target-features", "-avx512f");
-                NewF->addFnAttr("prefer-vector-width", "128");
-                NewF->addFnAttr("unroll-count", "16");
-                NewF->addFnAttr("unroll-full-unroll-max", "1024");
-                NewF->addFnAttr("interleave-count", "4");
-                break;
-    
-            case 3: // V3: FAST-MATH - Optimization for Floats/General Aggressiveness
-                // These attributes enable optimizations based on relaxed math rules
-                NewF->addFnAttr(Attribute::AlwaysInline); // Still useful for optimization but needs careful testing
-                NewF->addFnAttr("unsafe-fp-math", "true");
-                NewF->addFnAttr("no-nans-fp-math", "true");
-                NewF->addFnAttr("no-infs-fp-math", "true");
-                NewF->addFnAttr("inline-threshold", "100000");
-                NewF->addFnAttr(Attribute::NoUnwind); // Attribute::NoUnwind is set using Attribute::get [2][3]
-                break;
+
+        switch (versionId)
+        {
+        case 0: // BASELINE - Conservative
+                // errs() << "  V0: Baseline (conservative)\n";
+            break;
+        case 1: // V1: VECTORIZED - Maximum SIMD (Explicit AVX512)
+            NewF->addFnAttr(Attribute::NoInline);
+            NewF->addFnAttr("prefer-vector-width", "512");
+            NewF->addFnAttr("min-legal-vector-width", "512");
+            NewF->addFnAttr("target-features", "+avx512f,+avx512vl");
+            NewF->addFnAttr("vectorize-predicate", "enable");
+            break;
+
+        case 2: // V2: LOOP OPTIMIZED - Aggressive Unroll/Scalar (Forcing non-AVX)
+            // Explicitly disable wider vectorization to force differentiation
+            NewF->addFnAttr(Attribute::NoInline);
+            //NewF->addFnAttr("target-features", "-avx512f");
+            //NewF->addFnAttr("prefer-vector-width", "128");
+            NewF->addFnAttr("unroll-count", "16");
+            NewF->addFnAttr("unroll-full-unroll-max", "1024");
+            NewF->addFnAttr("interleave-count", "4");
+            break;
+
+        case 3: // V3: FAST-MATH - Optimization for Floats/General Aggressiveness
+            // These attributes enable optimizations based on relaxed math rules
+            NewF->addFnAttr(Attribute::AlwaysInline); // Still useful for optimization but needs careful testing
+            NewF->addFnAttr("unsafe-fp-math", "true");
+            NewF->addFnAttr("no-nans-fp-math", "true");
+            NewF->addFnAttr("no-infs-fp-math", "true");
+            NewF->addFnAttr("inline-threshold", "100000");
+            NewF->addFnAttr(Attribute::NoUnwind); // Attribute::NoUnwind is set using Attribute::get [2][3]
+            break;
         }
-    
+
         return NewF;
     }
 
@@ -363,7 +430,8 @@ namespace llvm
         FunctionMetadata metadata;
         metadata.original = F;
         auto funcName = F->getName().str();
-        metadata.groupName = determineFunctionGroup(F); // NEW: Store group name
+        // Config already stored in functionMap, retrieve it
+        metadata.config = functionMap[F].config;
 
         // Create versions
         for (int i = 0; i < 4; i++)
@@ -404,9 +472,10 @@ namespace llvm
     {
         LLVMContext &Ctx = M.getContext();
         Function *Orig = metadata.original;
-        
+
         // NEW: Get configuration for this function's group
-        const FunctionGroupConfig& config = getGroupConfig(metadata.groupName);
+        // Get configuration for this function
+        const FunctionGroupConfig &config = metadata.config;
 
         // Create wrapper function
         Function *Wrapper = Function::Create(
@@ -435,7 +504,6 @@ namespace llvm
         ConstantInt *one32 = cast<ConstantInt>(ConstantInt::get(i32Ty, 1));
         ConstantInt *two32 = cast<ConstantInt>(ConstantInt::get(i32Ty, 2));
         ConstantInt *warmupThreshold = cast<ConstantInt>(ConstantInt::get(i32Ty, config.warmupRuns * 4)); // Total warmup runs
-        ConstantInt *profilingThreshold = cast<ConstantInt>(ConstantInt::get(i32Ty, config.profilingThreshold));
         ConstantInt *sampleRate = cast<ConstantInt>(ConstantInt::get(i32Ty, config.sampleRate));
 
         // Get printf for debugging
@@ -545,82 +613,82 @@ namespace llvm
                 Value *VersionCounter = Builder.CreateAtomicRMW(
                     AtomicRMWInst::Add, metadata.currentVersion, one32,
                     MaybeAlign(4), AtomicOrdering::SequentiallyConsistent);
-                
+
                 // Apply modulo 4 to wrap around: v0->v1->v2->v3->v4->v5->v0->v1...
                 Value *SelectedVersion = Builder.CreateURem(VersionCounter,
-                                                           ConstantInt::get(i32Ty, NUM_VERSIONS));
+                                                            ConstantInt::get(i32Ty, NUM_VERSIONS));
 
                 // Create blocks for round-robin checking
                 BasicBlock *RoundRobinStartBB = BasicBlock::Create(Ctx, "roundrobin_start", Wrapper);
                 Builder.CreateBr(RoundRobinStartBB);
-                
+
                 Builder.SetInsertPoint(RoundRobinStartBB);
-                
+
                 // Try up to NUM_VERSIONS times in round-robin fashion to find a version under 200 runs
                 BasicBlock *CheckVersionBBs[NUM_VERSIONS];
                 for (int i = 0; i < NUM_VERSIONS; i++)
                 {
                     CheckVersionBBs[i] = BasicBlock::Create(Ctx, "roundrobin_check" + std::to_string(i), Wrapper);
                 }
-                
+
                 Builder.CreateBr(CheckVersionBBs[0]);
-                
+
                 // Check each version in round-robin order
                 for (int attempt = 0; attempt < NUM_VERSIONS; attempt++)
                 {
                     Builder.SetInsertPoint(CheckVersionBBs[attempt]);
-                    
+
                     // Calculate which version to try: (SelectedVersion + attempt) % NUM_VERSIONS
                     Value *VersionToTry = Builder.CreateURem(
                         Builder.CreateAdd(SelectedVersion, ConstantInt::get(i32Ty, attempt)),
                         ConstantInt::get(i32Ty, NUM_VERSIONS));
-                    
+
                     // Create switch statement to dispatch to correct version check
                     BasicBlock *VersionCheckBBs[NUM_VERSIONS];
                     for (int v = 0; v < NUM_VERSIONS; v++)
                     {
-                        VersionCheckBBs[v] = BasicBlock::Create(Ctx, 
-                            "check_v" + std::to_string(v) + "_attempt" + std::to_string(attempt), Wrapper);
+                        VersionCheckBBs[v] = BasicBlock::Create(Ctx,
+                                                                "check_v" + std::to_string(v) + "_attempt" + std::to_string(attempt), Wrapper);
                     }
-                    
+
                     SwitchInst *VersionSwitch = Builder.CreateSwitch(VersionToTry, VersionCheckBBs[0], NUM_VERSIONS);
-                    
+
                     for (int v = 0; v < NUM_VERSIONS; v++)
                     {
                         VersionSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, v)), VersionCheckBBs[v]);
-                        
+
                         Builder.SetInsertPoint(VersionCheckBBs[v]);
-                        
+
                         // Atomically try to claim a run for this version
                         Value *OldRunCount = Builder.CreateAtomicRMW(
                             AtomicRMWInst::Add, metadata.runCount[v], one32,
                             MaybeAlign(4), AtomicOrdering::SequentiallyConsistent);
-                        
+
                         // Check if this version still needs runs (old count < 200)
-                        Value *NeedsRun = Builder.CreateICmpULT(OldRunCount, ConstantInt::get(i32Ty, (config.profilingThreshold/4)));
-                        
-                        BasicBlock *UseVersionBB = BasicBlock::Create(Ctx, 
-                            "use_v" + std::to_string(v) + "_attempt" + std::to_string(attempt), Wrapper);
-                        
+                        Value *NeedsRun = Builder.CreateICmpULT(OldRunCount, ConstantInt::get(i32Ty, (config.profilingThreshold / 4)));
+
+                        BasicBlock *UseVersionBB = BasicBlock::Create(Ctx,
+                                                                      "use_v" + std::to_string(v) + "_attempt" + std::to_string(attempt), Wrapper);
+
                         // Create unique decrement block for this specific version
-                        BasicBlock *DecrementVersionBB = BasicBlock::Create(Ctx, 
-                            "decrement_v" + std::to_string(v) + "_attempt" + std::to_string(attempt), Wrapper);
-                        
+                        BasicBlock *DecrementVersionBB = BasicBlock::Create(Ctx,
+                                                                            "decrement_v" + std::to_string(v) + "_attempt" + std::to_string(attempt), Wrapper);
+
                         Builder.CreateCondBr(NeedsRun, UseVersionBB, DecrementVersionBB);
-                        
+
                         // Use this version - store it and profile
                         Builder.SetInsertPoint(UseVersionBB);
                         StoreInst *VersionStore = Builder.CreateStore(ConstantInt::get(i32Ty, v), metadata.currentVersion);
                         VersionStore->setAtomic(AtomicOrdering::Release);
                         VersionStore->setAlignment(Align(4));
                         Builder.CreateBr(UpdateStatsBB);
-                        
+
                         // Didn't use this version - decrement back in version-specific block
                         Builder.SetInsertPoint(DecrementVersionBB);
                         Builder.CreateAtomicRMW(
                             AtomicRMWInst::Sub, metadata.runCount[v], one32,
                             MaybeAlign(4), AtomicOrdering::SequentiallyConsistent);
-                        
+
                         // After decrement, either try next attempt or transition to optimal
                         if (attempt < NUM_VERSIONS - 1)
                         {
@@ -658,19 +726,19 @@ namespace llvm
                     FuncPtr = Builder.CreateSelect(IsVersionI, VersionFuncs[i], FuncPtr);
                 }
 
-                std::vector<Value *> Args;
-                for (auto &Arg : Wrapper->args())
-                    Args.push_back(&Arg);
+            std::vector<Value *> Args;
+            for (auto &Arg : Wrapper->args())
+                Args.push_back(&Arg);
 
-                if (Orig->getReturnType()->isVoidTy())
-                {
+            if (Orig->getReturnType()->isVoidTy())
+            {
                     Builder.CreateCall(Orig->getFunctionType(), FuncPtr, Args);
-                    Builder.CreateRetVoid();
-                }
-                else
-                {
+                Builder.CreateRetVoid();
+            }
+            else
+            {
                     Value *Result = Builder.CreateCall(Orig->getFunctionType(), FuncPtr, Args);
-                    Builder.CreateRet(Result);
+                Builder.CreateRet(Result);
                 }
             }
         }
@@ -871,9 +939,9 @@ namespace llvm
                 {
                     BestAvg = FinalAvg;
                     BestVersion = ConstantInt::get(i32Ty, 0);
-                }
-                else
-                {
+            }
+            else
+            {
                     Value *IsBetter = Builder.CreateFCmpOLT(FinalAvg, BestAvg);
                     BestVersion = Builder.CreateSelect(IsBetter,
                                                        ConstantInt::get(i32Ty, i), BestVersion);
@@ -993,22 +1061,10 @@ namespace llvm
                                                      {PointerType::get(Type::getInt8Ty(Ctx), 0)}, true);
         FunctionCallee Printf = M.getOrInsertFunction("printf", PrintfType);
         // NEW: Print group configurations
-        Value *GroupHeaderMsg = Builder.CreateGlobalStringPtr(
-            "[INIT] Adaptive dispatcher with MANUAL GROUP CONFIGURATIONS initialized:\n");
-        Builder.CreateCall(Printf, {GroupHeaderMsg});
-        
-        // Print each group configuration
-        for (const auto& [groupName, config] : FUNCTION_GROUPS) {
-            Value *GroupMsg = Builder.CreateGlobalStringPtr(
-                "  - Group %s: Warmup=%d, Sample Rate=1/%d, Threshold=%d (%s)\n");
-            Value *GroupNameStr = Builder.CreateGlobalStringPtr(groupName);
-            Value *DescStr = Builder.CreateGlobalStringPtr(config.description);
-            Builder.CreateCall(Printf, {GroupMsg, GroupNameStr, 
-                                       ConstantInt::get(Type::getInt32Ty(Ctx), config.warmupRuns),
-                                       ConstantInt::get(Type::getInt32Ty(Ctx), config.sampleRate),
-                                       ConstantInt::get(Type::getInt32Ty(Ctx), config.profilingThreshold),
-                                       DescStr});
-        }
+        Value *InitMsg = Builder.CreateGlobalStringPtr(
+            "[INIT] Adaptive dispatcher with DYNAMIC THRESHOLDS initialized\n"
+            "      Thresholds calculated per-function based on expected call frequency\n");
+        Builder.CreateCall(Printf, {InitMsg});
         Builder.CreateRetVoid();
 
         appendToGlobalCtors(M, InitFunc, 65535);
