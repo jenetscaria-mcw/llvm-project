@@ -25,14 +25,13 @@ namespace llvm
         std::string description;
     };
 
-    // Function group configurations - UPDATED with your requirements
-
+    // Updated for dynamic thresholds
     struct FunctionMetadata
     {
         Function *original;
-        Function *versions[4]; // v0 to v5
+        Function *versions[4]; // v0 to v3
         Function *wrapper;
-        Function *dispatcher;  // Dispatcher function
+        Function *dispatcher;       // Dispatcher function
         FunctionGroupConfig config; // Store per-function config
 
         // Per-function static globals for adaptive runtime tracking
@@ -51,14 +50,7 @@ namespace llvm
     // Extract expected call count from function attributes / metadata
     static uint64_t getExpectedCallCount(Function *F)
     {
-        // Method 1: Check for a direct function attribute: __attribute__((adaptive(N)))
-        //
-        // Frontend is expected to lower this to an LLVM function attribute
-        //    "adaptive" = "388"
-        //
-        // Example C/C++:
-        //    __attribute__((adaptive(388)))
-        //    void foo();
+       
         if (F->hasFnAttribute("adaptive"))
         {
             Attribute Attr = F->getFnAttribute("adaptive");
@@ -68,7 +60,7 @@ namespace llvm
                 return Count;
         }
 
-        // Method 2: Check for annotate("adaptive:N") metadata format
+
         if (F->hasMetadata())
         {
             if (MDNode *MD = F->getMetadata("annotation"))
@@ -91,7 +83,6 @@ namespace llvm
             }
         }
 
-        // Method 3: Check for PGO entry count
         if (auto EntryCount = F->getEntryCount())
         {
             return EntryCount->getCount();
@@ -123,7 +114,7 @@ namespace llvm
         const uint64_t MIN_PROFILE_SAMPLES = 400;
         const uint64_t MAX_PROFILE_SAMPLES = 20000;
         const double PROFILE_PERCENTAGE = 0.03;
-        const double WARMUP_PERCENTAGE = 0.10;
+        const double PROFILING_PHASE_PERCENTAGE = 0.40; // Use 20% of calls for profiling, 80% for optimal
 
         // Calculate target profiling samples (3% of total calls)
         uint64_t targetSamples = (uint64_t)(expectedCalls * PROFILE_PERCENTAGE);
@@ -137,22 +128,25 @@ namespace llvm
 
         config.profilingThreshold = (int)targetSamples;
 
-        // Calculate warmup runs (10% of profiling samples)
-        config.warmupRuns = std::max(40, (int)(targetSamples * WARMUP_PERCENTAGE));
-        config.warmupRuns = std::min(config.warmupRuns, 200);
 
-        // Calculate sample rate
-        if (expectedCalls > targetSamples * 2)
+        int warmupRounds = std::max(10, (int)(targetSamples * 0.01)); // 1% of samples
+        warmupRounds = std::min(warmupRounds, 50); // Max 50 rounds (200 total warmup calls)
+        config.warmupRuns = warmupRounds; // Each round = 4 calls (one per version)
+
+        uint64_t targetProfilingCalls = (uint64_t)(expectedCalls * PROFILING_PHASE_PERCENTAGE);
+        
+        if (targetProfilingCalls > targetSamples)
         {
-            config.sampleRate = (int)(expectedCalls / targetSamples);
+            config.sampleRate = (int)(targetProfilingCalls / targetSamples);
         }
         else
         {
+            // For very cold functions, sample every call
             config.sampleRate = 1;
         }
 
         // Ensure sample rate is reasonable
-        config.sampleRate = std::max(1, std::min(config.sampleRate, 1000));
+        config.sampleRate = std::max(1, std::min(config.sampleRate, 500));
 
         // Set description
         config.description = source;
@@ -171,7 +165,6 @@ namespace llvm
         Function *createOptimizedDispatchWrapper(FunctionMetadata &metadata, Module &M);
         Function *createThinDispatcher(FunctionMetadata &metadata, Module &M);
         void createInitializationFunction(Module &M);
-
 
     public:
         SimpleAdaptivePassImpl() {}
@@ -217,9 +210,9 @@ namespace llvm
             else if (F->getEntryCount())
             {
                 source = "PGO";
-        }
-        else
-        {
+            }
+            else
+            {
                 source = "estimated";
             }
 
@@ -238,10 +231,10 @@ namespace llvm
                    << " | Profile threshold: " << config.profilingThreshold
                    << " (" << (config.profilingThreshold / 4) << " per version)\n";
 
-                processFunctionWithDirectDispatch(F, funcId++, M);
-            }
+            processFunctionWithDirectDispatch(F, funcId++, M);
+        }
 
-            createInitializationFunction(M);
+        createInitializationFunction(M);
 
         return PreservedAnalyses::none();
     }
@@ -339,15 +332,12 @@ namespace llvm
         NewF->setName(F->getName() + "_v" + std::to_string(versionId));
         NewF->setLinkage(GlobalValue::InternalLinkage);
 
-        // Apply NoInline to all versions for distinct measurement
-        // NewF->addFnAttr(Attribute::NoInline); // Prevents identical optimization by caller
-
         switch (versionId)
         {
-        case 0: // BASELINE - Conservative
+        case 0: 
                 // errs() << "  V0: Baseline (conservative)\n";
             break;
-        case 1: // V1: VECTORIZED - Maximum SIMD (Explicit AVX512)
+        case 1:
             NewF->addFnAttr(Attribute::NoInline);
             NewF->addFnAttr("prefer-vector-width", "512");
             NewF->addFnAttr("min-legal-vector-width", "512");
@@ -355,18 +345,16 @@ namespace llvm
             NewF->addFnAttr("vectorize-predicate", "enable");
             break;
 
-        case 2: // V2: LOOP OPTIMIZED - Aggressive Unroll/Scalar (Forcing non-AVX)
-            // Explicitly disable wider vectorization to force differentiation
+        case 2: 
             NewF->addFnAttr(Attribute::NoInline);
-            //NewF->addFnAttr("target-features", "-avx512f");
-            //NewF->addFnAttr("prefer-vector-width", "128");
+            // NewF->addFnAttr("target-features", "-avx512f");
+            // NewF->addFnAttr("prefer-vector-width", "128");
             NewF->addFnAttr("unroll-count", "16");
             NewF->addFnAttr("unroll-full-unroll-max", "1024");
             NewF->addFnAttr("interleave-count", "4");
             break;
 
-        case 3: // V3: FAST-MATH - Optimization for Floats/General Aggressiveness
-            // These attributes enable optimizations based on relaxed math rules
+        case 3: 
             NewF->addFnAttr(Attribute::AlwaysInline); // Still useful for optimization but needs careful testing
             NewF->addFnAttr("unsafe-fp-math", "true");
             NewF->addFnAttr("no-nans-fp-math", "true");
@@ -726,19 +714,19 @@ namespace llvm
                     FuncPtr = Builder.CreateSelect(IsVersionI, VersionFuncs[i], FuncPtr);
                 }
 
-            std::vector<Value *> Args;
-            for (auto &Arg : Wrapper->args())
-                Args.push_back(&Arg);
+                std::vector<Value *> Args;
+                for (auto &Arg : Wrapper->args())
+                    Args.push_back(&Arg);
 
-            if (Orig->getReturnType()->isVoidTy())
-            {
+                if (Orig->getReturnType()->isVoidTy())
+                {
                     Builder.CreateCall(Orig->getFunctionType(), FuncPtr, Args);
-                Builder.CreateRetVoid();
-            }
-            else
-            {
+                    Builder.CreateRetVoid();
+                }
+                else
+                {
                     Value *Result = Builder.CreateCall(Orig->getFunctionType(), FuncPtr, Args);
-                Builder.CreateRet(Result);
+                    Builder.CreateRet(Result);
                 }
             }
         }
@@ -767,13 +755,6 @@ namespace llvm
                     metadata.versions[i], Orig->getFunctionType()->getPointerTo()));
             }
 
-            // Get RDTSC inline assembly for x86-64
-            /*
-            FunctionType *RdtscType = FunctionType::get(i64Ty, {}, false);
-            InlineAsm *Rdtsc = InlineAsm::get(RdtscType,
-                                             "rdtsc; shl $$32, %rdx; or %rdx, %rax",
-                                             "=A,~{rdx}", false);
-            */
             Function *ReadCycleCounter = Intrinsic::getDeclaration(&M, Intrinsic::readcyclecounter);
 
             // Conditional timing based on phase
@@ -939,9 +920,9 @@ namespace llvm
                 {
                     BestAvg = FinalAvg;
                     BestVersion = ConstantInt::get(i32Ty, 0);
-            }
-            else
-            {
+                }
+                else
+                {
                     Value *IsBetter = Builder.CreateFCmpOLT(FinalAvg, BestAvg);
                     BestVersion = Builder.CreateSelect(IsBetter,
                                                        ConstantInt::get(i32Ty, i), BestVersion);
@@ -961,8 +942,6 @@ namespace llvm
             StoreInst *BestStore = Builder.CreateStore(BestVersion, metadata.bestVersion);
             BestStore->setAtomic(AtomicOrdering::Release);
             BestStore->setAlignment(Align(4));
-
-            // Phase already updated by CAS above - no need to update again
 
             // Create blocks for each version
             BasicBlock *PatchDoneBB = BasicBlock::Create(Ctx, "patch_done", Wrapper);
