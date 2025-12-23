@@ -12,6 +12,8 @@
 #include <vector>
 #include <algorithm>
 
+#define ADAPTIVE_DEBUG_PRINTS 0
+
 using namespace llvm;
 
 namespace llvm
@@ -224,7 +226,7 @@ namespace llvm
             metadata.config = config;
 
             // Print configuration
-            errs() << "[ADAPTIVE] Function: " << F->getName()
+            errs() << "ADAPTIVE Function: " << F->getName()
                    << " | Expected calls: " << expectedCalls << " (" << source << ")"
                    << " | Warmup: " << config.warmupRuns
                    << " | Sample rate: 1/" << config.sampleRate
@@ -498,7 +500,9 @@ namespace llvm
         FunctionType *PrintfType = FunctionType::get(i32Ty,
                                                      {PointerType::get(Type::getInt8Ty(Ctx), 0)}, true);
         FunctionCallee Printf = M.getOrInsertFunction("printf", PrintfType);
+        #if ADAPTIVE_DEBUG_PRINTS
         Value *FuncName = Builder.CreateGlobalStringPtr(Orig->getName().str());
+        #endif
 
         // Entry: Check current phase
         LoadInst *PhaseLoad = Builder.CreateLoad(i32Ty, metadata.currentPhase);
@@ -559,11 +563,12 @@ namespace llvm
 
             // Only the winning thread performs the transition
             Builder.SetInsertPoint(DoWarmupTransitionBB);
-
+            #if ADAPTIVE_DEBUG_PRINTS
             // Print transition message
             Value *TransMsg = Builder.CreateGlobalStringPtr(
-                "[WARMUP COMPLETE] %s - Transitioning to profiling phase after %d warmup runs\n");
+                "WARMUP COMPLETE %s - Transitioning to profiling phase after %d warmup runs\n");
             Builder.CreateCall(Printf, {TransMsg, FuncName, warmupThreshold});
+            #endif
 
             // Phase already updated by CAS above - no need to update again
 
@@ -931,11 +936,13 @@ namespace llvm
 
                 // Print stats
                 Value *AvgForDisplay = Builder.CreateFPToUI(FinalAvg, i64Ty);
+                #if ADAPTIVE_DEBUG_PRINTS
                 Value *StatsMsg = Builder.CreateGlobalStringPtr(
-                    "[STATS] %s - V%d: total_cycles=%llu, runs=%u, avg=%llu\n");
+                    "STATS %s - V%d: total_cycles=%llu, runs=%u, avg=%llu\n");
                 Builder.CreateCall(Printf, {StatsMsg, FuncName,
                                             ConstantInt::get(i32Ty, i),
                                             CurrentCycles[i], CurrentRuns[i], AvgForDisplay});
+                #endif
             }
 
             // Store best version
@@ -965,12 +972,12 @@ namespace llvm
                 StoreInst *PatchStore = Builder.CreateStore(VersionPtr, metadata.functionPtr);
                 PatchStore->setAtomic(AtomicOrdering::Release);
                 PatchStore->setAlignment(Align(8));
-
+                #if ADAPTIVE_DEBUG_PRINTS
                 // Print patch message
                 Value *PatchMsg = Builder.CreateGlobalStringPtr(
-                    "[PATCH] %s - Function pointer patched to V%d, wrapper bypassed!\n");
+                    "PATCH %s - Function pointer patched to V%d, wrapper bypassed!\n");
                 Builder.CreateCall(Printf, {PatchMsg, FuncName, ConstantInt::get(i32Ty, i)});
-
+                #endif
                 Builder.CreateBr(PatchDoneBB);
             }
 
@@ -1040,10 +1047,12 @@ namespace llvm
                                                      {PointerType::get(Type::getInt8Ty(Ctx), 0)}, true);
         FunctionCallee Printf = M.getOrInsertFunction("printf", PrintfType);
         // NEW: Print group configurations
+#if ADAPTIVE_DEBUG_PRINTS
         Value *InitMsg = Builder.CreateGlobalStringPtr(
-            "[INIT] Adaptive dispatcher with DYNAMIC THRESHOLDS initialized\n"
+            "INIT Adaptive dispatcher with DYNAMIC THRESHOLDS initialized\n"
             "      Thresholds calculated per-function based on expected call frequency\n");
         Builder.CreateCall(Printf, {InitMsg});
+#endif
         Builder.CreateRetVoid();
 
         appendToGlobalCtors(M, InitFunc, 65535);
