@@ -12,7 +12,7 @@
 #include <vector>
 #include <algorithm>
 
-#define ADAPTIVE_DEBUG_PRINTS 0
+#define ADAPTIVE_DEBUG_PRINTS 1
 
 using namespace llvm;
 
@@ -40,14 +40,121 @@ namespace llvm
         GlobalVariable *callCounter;    // total call count
         GlobalVariable *warmupCounter;  // warmup call count
         GlobalVariable *profileCounter; // profiled call count (sampled)
-        GlobalVariable *cpuCycles[4];   // accumulated cpu cycles per version
-        GlobalVariable *runCount[4];    // actual profiled runs per version
+        GlobalVariable *cpuCycles[4];        // accumulated cpu cycles per version
+        GlobalVariable *cpuCyclesSquared[4]; // PHASE 2: accumulated squared cycles for variance
+        GlobalVariable *runCount[4];         // actual profiled runs per version
         GlobalVariable *bestVersion;    // best version index after profiling
         GlobalVariable *currentPhase;   // 0=warmup, 1=profiling, 2=optimal
         GlobalVariable *currentVersion; // current version being tested
         GlobalVariable *sampleCounter;  // counter for sampling
         GlobalVariable *functionPtr;    // Function pointer for direct dispatch either wrapper or best function
     };
+
+
+    struct FunctionCharacteristics
+    {
+        int instructionCount;
+        int basicBlockCount;
+        int loopCount;              // Approximate loop count
+        int loadStoreCount;         // Memory operations
+        int fpOpCount;              // Floating-point operations
+        int callCount;              // Function calls
+        int branchCount;            // Branches
+        
+        // Derived characteristics
+        bool isSmall;               // < 50 instructions
+        bool isMedium;              // 50-200 instructions
+        bool isLarge;               // > 200 instructions
+        bool hasLoops;              // Has backward branches (approximation)
+        bool isMemoryIntensive;     // High load/store ratio
+        bool hasFPMath;             // Has floating-point operations
+        bool manyBranches;          // Branch-heavy
+        
+        // Optimization recommendations
+        bool canBenefitFromVectorization;
+        bool canBenefitFromUnrolling;
+        bool canBenefitFromInlining;
+        bool canBenefitFromFastMath;
+    };
+    
+    static FunctionCharacteristics analyzeFunctionCharacteristics(Function *F)
+    {
+        FunctionCharacteristics fc = {};
+        
+        // Count instructions and categorize
+        for (BasicBlock &BB : *F)
+        {
+            fc.basicBlockCount++;
+            
+            for (Instruction &I : BB)
+            {
+                fc.instructionCount++;
+                
+                // Categorize instruction types
+                if (isa<LoadInst>(I) || isa<StoreInst>(I))
+                {
+                    fc.loadStoreCount++;
+                }
+                else if (isa<CallInst>(I))
+                {
+                    fc.callCount++;
+                }
+                else if (isa<BranchInst>(I))
+                {
+                    fc.branchCount++;
+                    
+                    // Simple loop detection: backward branches
+                    BranchInst *BI = cast<BranchInst>(&I);
+                    if (BI->isConditional())
+                    {
+                        // Check if branch target is before current instruction
+                        // This is a simple heuristic for loop detection
+                        fc.loopCount++;
+                    }
+                }
+                
+                // Check for floating-point operations
+                Type *T = I.getType();
+                if (T->isFloatingPointTy())
+                {
+                    fc.fpOpCount++;
+                }
+                
+                // Also check operands for FP types
+                for (Use &U : I.operands())
+                {
+                    if (U.get()->getType()->isFloatingPointTy())
+                    {
+                        fc.hasFPMath = true;
+                    }
+                }
+            }
+        }
+        
+        // Derive characteristics
+        fc.isSmall = (fc.instructionCount < 50);
+        fc.isMedium = (fc.instructionCount >= 50 && fc.instructionCount <= 200);
+        fc.isLarge = (fc.instructionCount > 200);
+        fc.hasLoops = (fc.loopCount > 0);
+        fc.isMemoryIntensive = (fc.loadStoreCount > fc.instructionCount / 3);
+        fc.hasFPMath = (fc.fpOpCount > 0);
+        fc.manyBranches = (fc.branchCount > 10);
+        
+        // Optimization recommendations
+        // Vectorization: beneficial for loops with reasonable size
+        fc.canBenefitFromVectorization = fc.hasLoops && !fc.isLarge && !fc.isMemoryIntensive;
+        
+        // Unrolling: beneficial for small to medium loops
+        fc.canBenefitFromUnrolling = fc.hasLoops && (fc.isSmall || fc.isMedium);
+        
+        // Inlining: only for very small functions without many calls
+        fc.canBenefitFromInlining = fc.isSmall && (fc.callCount < 3);
+        
+        // Fast math: beneficial for FP-heavy, compute-bound code
+        fc.canBenefitFromFastMath = fc.hasFPMath && !fc.isMemoryIntensive;
+        
+        return fc;
+    }
 
     // Extract expected call count from function attributes / metadata
     static uint64_t getExpectedCallCount(Function *F)
@@ -116,7 +223,7 @@ namespace llvm
         const uint64_t MIN_PROFILE_SAMPLES = 400;
         const uint64_t MAX_PROFILE_SAMPLES = 20000;
         const double PROFILE_PERCENTAGE = 0.03;
-        const double PROFILING_PHASE_PERCENTAGE = 0.40; // Use 20% of calls for profiling, 80% for optimal
+        const double PROFILING_PHASE_PERCENTAGE = 0.20; // Use 20% of calls for profiling, 80% for optimal
 
         // Calculate target profiling samples (3% of total calls)
         uint64_t targetSamples = (uint64_t)(expectedCalls * PROFILE_PERCENTAGE);
@@ -260,6 +367,7 @@ namespace llvm
         const std::string funcPtrName = "__static_funcptr_" + baseName;
         const std::string cyclesBase = "__static_cycles_" + baseName + "_v";
         const std::string runsBase = "__static_runs_" + baseName + "_v";
+        const std::string cyclesSquaredBase = "__static_cycles_sq_" + baseName + "_v"; // PHASE 2
 
         // Create variables with atomic alignment
         metadata.callCounter = new GlobalVariable(
@@ -304,6 +412,12 @@ namespace llvm
                 M, i64Ty, false, GlobalValue::InternalLinkage,
                 ConstantInt::get(i64Ty, 0), cyclesBase + versionStrs[v]);
             metadata.cpuCycles[v]->setAlignment(Align(8));
+            
+            // PHASE 2: Create squared cycles global for variance tracking
+            metadata.cpuCyclesSquared[v] = new GlobalVariable(
+                M, i64Ty, false, GlobalValue::InternalLinkage,
+                ConstantInt::get(i64Ty, 0), cyclesSquaredBase + versionStrs[v]);
+            metadata.cpuCyclesSquared[v]->setAlignment(Align(8));
 
             metadata.runCount[v] = new GlobalVariable(
                 M, i32Ty, false, GlobalValue::InternalLinkage,
@@ -327,6 +441,10 @@ namespace llvm
         metadata.currentVersion->setAlignment(Align(4));
     }
 
+    // ============================================================================
+    // PHASE 1: MODIFIED createVersion() WITH INTELLIGENT VERSION GENERATION
+    // ============================================================================
+    
     Function *SimpleAdaptivePassImpl::createVersion(Function *F, int versionId, Module &M)
     {
         ValueToValueMapTy VMap;
@@ -334,35 +452,94 @@ namespace llvm
         NewF->setName(F->getName() + "_v" + std::to_string(versionId));
         NewF->setLinkage(GlobalValue::InternalLinkage);
 
+        // PHASE 1 ADDITION: Analyze function characteristics
+        FunctionCharacteristics fc = analyzeFunctionCharacteristics(F);
+        
+        // Print characteristics for debugging
+        #if ADAPTIVE_DEBUG_PRINTS
+        errs() << "  Function characteristics for " << F->getName() << ":\n";
+        errs() << "    Instructions: " << fc.instructionCount << "\n";
+        errs() << "    Loops: " << fc.loopCount << "\n";
+        errs() << "    Memory ops: " << fc.loadStoreCount << "\n";
+        errs() << "    FP ops: " << fc.fpOpCount << "\n";
+        errs() << "    Can vectorize: " << fc.canBenefitFromVectorization << "\n";
+        errs() << "    Can unroll: " << fc.canBenefitFromUnrolling << "\n";
+        errs() << "    Can inline: " << fc.canBenefitFromInlining << "\n";
+        #endif
+
         switch (versionId)
         {
         case 0: 
-                // errs() << "  V0: Baseline (conservative)\n";
+            // Baseline - no optimizations
             break;
+            
         case 1:
-            NewF->addFnAttr(Attribute::NoInline);
-            NewF->addFnAttr("prefer-vector-width", "512");
-            NewF->addFnAttr("min-legal-vector-width", "512");
-            NewF->addFnAttr("target-features", "+avx512f,+avx512vl");
-            NewF->addFnAttr("vectorize-predicate", "enable");
+            // VECTORIZATION VERSION -  Only apply if beneficial
+            if (fc.canBenefitFromVectorization)
+            {
+                NewF->addFnAttr(Attribute::NoInline);
+                NewF->addFnAttr("prefer-vector-width", "512");
+                NewF->addFnAttr("min-legal-vector-width", "512");
+                NewF->addFnAttr("target-features", "+avx512f,+avx512vl");
+                NewF->addFnAttr("vectorize-predicate", "enable");
+            }
+            else if (fc.isMemoryIntensive)
+            {
+                // Alternative for memory-bound: prefetching
+                NewF->addFnAttr("prefetch-distance", "128");
+            }
+            // else: no special optimization for V1
             break;
 
         case 2: 
-            NewF->addFnAttr(Attribute::NoInline);
-            // NewF->addFnAttr("target-features", "-avx512f");
-            // NewF->addFnAttr("prefer-vector-width", "128");
-            NewF->addFnAttr("unroll-count", "16");
-            NewF->addFnAttr("unroll-full-unroll-max", "1024");
-            NewF->addFnAttr("interleave-count", "4");
+            // UNROLLING VERSION -  Adaptive unroll factor
+            if (fc.canBenefitFromUnrolling)
+            {
+                NewF->addFnAttr(Attribute::NoInline);
+                
+                // Adaptive unroll factor based on function size
+                if (fc.isSmall)
+                {
+                    // Aggressive unrolling for small functions
+                    NewF->addFnAttr("unroll-count", "16");
+                    NewF->addFnAttr("unroll-full-unroll-max", "1024");
+                    NewF->addFnAttr("interleave-count", "4");
+                }
+                else if (fc.isMedium)
+                {
+                    // Moderate unrolling for medium functions
+                    NewF->addFnAttr("unroll-count", "8");
+                    NewF->addFnAttr("interleave-count", "2");
+                }
+                // else: minimal unrolling for large functions (just NoInline)
+            }
+            else if (fc.isMemoryIntensive && !fc.isLarge)
+            {
+                // For memory-bound, prefer smaller code size
+                NewF->addFnAttr("unroll-count", "2");
+            }
             break;
 
         case 3: 
-            NewF->addFnAttr(Attribute::AlwaysInline); // Still useful for optimization but needs careful testing
-            NewF->addFnAttr("unsafe-fp-math", "true");
-            NewF->addFnAttr("no-nans-fp-math", "true");
-            NewF->addFnAttr("no-infs-fp-math", "true");
-            NewF->addFnAttr("inline-threshold", "100000");
-            NewF->addFnAttr(Attribute::NoUnwind); // Attribute::NoUnwind is set using Attribute::get [2][3]
+            // SPECIALTY VERSION -  Conditional strategies
+            if (fc.canBenefitFromInlining)
+            {
+                // Small functions: aggressive inlining
+                NewF->addFnAttr(Attribute::AlwaysInline);
+                NewF->addFnAttr("inline-threshold", "100000");
+            }
+            else if (fc.canBenefitFromFastMath)
+            {
+                // FP-heavy functions: fast math
+                NewF->addFnAttr("unsafe-fp-math", "true");
+                NewF->addFnAttr("no-nans-fp-math", "true");
+                NewF->addFnAttr("no-infs-fp-math", "true");
+            }
+            else if (fc.manyBranches)
+            {
+                // Branch-heavy: keep code size small for better branch prediction
+                // No aggressive optimizations
+            }
             break;
         }
 
@@ -821,6 +998,12 @@ namespace llvm
                 // Atomic add for cycles (runCount already incremented in DoSampleBB)
                 Builder.CreateAtomicRMW(AtomicRMWInst::Add, metadata.cpuCycles[i],
                                         ElapsedCycles, MaybeAlign(8), AtomicOrdering::SequentiallyConsistent);
+                
+                // PHASE 2: Accumulate squared cycles for variance calculation
+                Value *CyclesSquared = Builder.CreateMul(ElapsedCycles, ElapsedCycles);
+                Builder.CreateAtomicRMW(AtomicRMWInst::Add, metadata.cpuCyclesSquared[i],
+                                        CyclesSquared, MaybeAlign(8), AtomicOrdering::SequentiallyConsistent);
+                
                 Builder.CreateBr(ContinueBB);
                 UpdateBlocks.push_back(UpdateVersionBB);
             }
@@ -904,39 +1087,96 @@ namespace llvm
                 CurrentRuns.push_back(RunsLoad);
             }
 
-            // Find best version
+            // Load squared cycles for variance calculation
+            std::vector<Value *> CurrentCyclesSquared;
+            for (int i = 0; i < NUM_VERSIONS; i++)
+            {
+                LoadInst *CyclesSquaredLoad = Builder.CreateLoad(i64Ty, metadata.cpuCyclesSquared[i]);
+                CyclesSquaredLoad->setAtomic(AtomicOrdering::Acquire);
+                CyclesSquaredLoad->setAlignment(Align(8));
+                CurrentCyclesSquared.push_back(CyclesSquaredLoad);
+            }
+
+            // Statistical selection with variance
             Value *BestVersion = zero32;
             Value *BestAvg = nullptr;
+            Value *BestStdErr = nullptr;
 
             for (int i = 0; i < NUM_VERSIONS; i++)
             {
                 Value *HasRuns = Builder.CreateICmpUGT(CurrentRuns[i], zero32);
+                
+                // Calculate mean
                 Value *CyclesFloat = Builder.CreateUIToFP(CurrentCycles[i], Builder.getDoubleTy());
                 Value *RunsFloat = Builder.CreateUIToFP(CurrentRuns[i], Builder.getDoubleTy());
                 Value *SafeRunsFloat = Builder.CreateSelect(
                     HasRuns, RunsFloat,
                     ConstantFP::get(Builder.getDoubleTy(), 1.0));
-                Value *AvgFloat = Builder.CreateFDiv(CyclesFloat, SafeRunsFloat);
+                Value *MeanFloat = Builder.CreateFDiv(CyclesFloat, SafeRunsFloat);
+                
+                // Calculate variance
+                Value *CyclesSquaredFloat = Builder.CreateUIToFP(CurrentCyclesSquared[i], Builder.getDoubleTy());
+                Value *MeanOfSquares = Builder.CreateFDiv(CyclesSquaredFloat, SafeRunsFloat);
+                Value *MeanSquared = Builder.CreateFMul(MeanFloat, MeanFloat);
+                Value *Variance = Builder.CreateFSub(MeanOfSquares, MeanSquared);
+                
+                // Standard deviation = sqrt(variance)
+                Function *SqrtFn = Intrinsic::getDeclaration(&M, Intrinsic::sqrt, {Builder.getDoubleTy()});
+                Value *StdDev = Builder.CreateCall(SqrtFn, {Variance});
+                
+                // Standard error = stddev / sqrt(n)
+                Value *SqrtN = Builder.CreateCall(SqrtFn, {RunsFloat});
+                Value *StdErr = Builder.CreateFDiv(StdDev, SqrtN);
+                
                 Value *MaxValFloat = ConstantFP::get(Builder.getDoubleTy(),
                                                      std::numeric_limits<double>::max());
-                Value *FinalAvg = Builder.CreateSelect(HasRuns, AvgFloat, MaxValFloat);
+                Value *FinalAvg = Builder.CreateSelect(HasRuns, MeanFloat, MaxValFloat);
+                Value *FinalStdErr = Builder.CreateSelect(HasRuns, StdErr, MaxValFloat);
 
                 if (i == 0)
                 {
                     BestAvg = FinalAvg;
+                    BestStdErr = FinalStdErr;
                     BestVersion = ConstantInt::get(i32Ty, 0);
                 }
                 else
                 {
-                    Value *IsBetter = Builder.CreateFCmpOLT(FinalAvg, BestAvg);
-                    BestVersion = Builder.CreateSelect(IsBetter,
+                    // Improvement must exceed: 1.96 * combined_stderr + 5% minimum
+                    
+                    Value *AbsImprovement = Builder.CreateFSub(BestAvg, FinalAvg);
+                    
+                    // Combined standard error for 95% confidence
+                    Value *CombinedStdErr = Builder.CreateFAdd(BestStdErr, FinalStdErr);
+                    Value *ConfidenceInterval = Builder.CreateFMul(
+                        ConstantFP::get(Builder.getDoubleTy(), 1.96), CombinedStdErr);
+                    
+                    // Minimum threshold: 5% of current best
+                    Value *MinThreshold = Builder.CreateFMul(BestAvg, 
+                        ConstantFP::get(Builder.getDoubleTy(), 0.05));
+                    
+                    // Total required improvement
+                    Value *RequiredImprovement = Builder.CreateFAdd(ConfidenceInterval, MinThreshold);
+                    
+                    // Only switch if significantly better
+                    Value *IsSignificantlyBetter = Builder.CreateFCmpOGT(AbsImprovement, RequiredImprovement);
+                    
+                    BestVersion = Builder.CreateSelect(IsSignificantlyBetter,
                                                        ConstantInt::get(i32Ty, i), BestVersion);
-                    BestAvg = Builder.CreateSelect(IsBetter, FinalAvg, BestAvg);
+                    BestAvg = Builder.CreateSelect(IsSignificantlyBetter, FinalAvg, BestAvg);
+                    BestStdErr = Builder.CreateSelect(IsSignificantlyBetter, FinalStdErr, BestStdErr);
                 }
 
                 // Print stats
                 Value *AvgForDisplay = Builder.CreateFPToUI(FinalAvg, i64Ty);
                 #if ADAPTIVE_DEBUG_PRINTS
+                Value *StdErrForDisplay = Builder.CreateFPToUI(FinalStdErr, i64Ty);
+                Value *StatsMsg = Builder.CreateGlobalStringPtr(
+                    "STATS %s - V%d: total_cycles=%llu, runs=%u, avg=%llu, stderr=%llu\n");
+                Builder.CreateCall(Printf, {StatsMsg, FuncName,
+                                            ConstantInt::get(i32Ty, i),
+                                            CurrentCycles[i], CurrentRuns[i], 
+                                            AvgForDisplay, StdErrForDisplay});
+                #else
                 Value *StatsMsg = Builder.CreateGlobalStringPtr(
                     "STATS %s - V%d: total_cycles=%llu, runs=%u, avg=%llu\n");
                 Builder.CreateCall(Printf, {StatsMsg, FuncName,
