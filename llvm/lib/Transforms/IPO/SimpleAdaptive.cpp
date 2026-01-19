@@ -765,6 +765,134 @@ namespace llvm
                 AtomicRMWInst::Add, metadata.sampleCounter, one32,
                 MaybeAlign(4), AtomicOrdering::SequentiallyConsistent);
 
+            // PHASE 3: Early stopping - check for convergence every 100 samples
+            Value *CheckInterval = ConstantInt::get(i32Ty, 100);
+            Value *ShouldCheckConvergence = Builder.CreateICmpEQ(
+                Builder.CreateURem(SampleCount, CheckInterval), zero32);
+            
+            BasicBlock *CheckConvergenceBB = BasicBlock::Create(Ctx, "check_convergence", Wrapper);
+            BasicBlock *ContinueProfilingBB = BasicBlock::Create(Ctx, "continue_profiling", Wrapper);
+            Builder.CreateCondBr(ShouldCheckConvergence, CheckConvergenceBB, ContinueProfilingBB);
+            
+            // Check convergence block
+            Builder.SetInsertPoint(CheckConvergenceBB);
+            {
+                // Load all version statistics
+                std::vector<Value *> TempCycles;
+                std::vector<Value *> TempCyclesSquared;
+                std::vector<Value *> TempRuns;
+                
+                for (int i = 0; i < NUM_VERSIONS; i++)
+                {
+                    LoadInst *CyclesLoad = Builder.CreateLoad(i64Ty, metadata.cpuCycles[i]);
+                    CyclesLoad->setAtomic(AtomicOrdering::Acquire);
+                    CyclesLoad->setAlignment(Align(8));
+                    TempCycles.push_back(CyclesLoad);
+                    
+                    LoadInst *CyclesSquaredLoad = Builder.CreateLoad(i64Ty, metadata.cpuCyclesSquared[i]);
+                    CyclesSquaredLoad->setAtomic(AtomicOrdering::Acquire);
+                    CyclesSquaredLoad->setAlignment(Align(8));
+                    TempCyclesSquared.push_back(CyclesSquaredLoad);
+                    
+                    LoadInst *RunsLoad = Builder.CreateLoad(i32Ty, metadata.runCount[i]);
+                    RunsLoad->setAtomic(AtomicOrdering::Acquire);
+                    RunsLoad->setAlignment(Align(4));
+                    TempRuns.push_back(RunsLoad);
+                }
+                
+                // Calculate means, variances, and find best/second best
+                std::vector<Value *> Means;
+                std::vector<Value *> CVs; // Coefficient of variation
+                
+                for (int i = 0; i < NUM_VERSIONS; i++)
+                {
+                    Value *HasRuns = Builder.CreateICmpUGT(TempRuns[i], zero32);
+                    
+                    // Calculate mean
+                    Value *CyclesFloat = Builder.CreateUIToFP(TempCycles[i], Builder.getDoubleTy());
+                    Value *RunsFloat = Builder.CreateUIToFP(TempRuns[i], Builder.getDoubleTy());
+                    Value *SafeRunsFloat = Builder.CreateSelect(HasRuns, RunsFloat,
+                        ConstantFP::get(Builder.getDoubleTy(), 1.0));
+                    Value *Mean = Builder.CreateFDiv(CyclesFloat, SafeRunsFloat);
+                    
+                    // Calculate coefficient of variation (CV = stddev / mean)
+                    Value *CyclesSquaredFloat = Builder.CreateUIToFP(TempCyclesSquared[i], Builder.getDoubleTy());
+                    Value *MeanOfSquares = Builder.CreateFDiv(CyclesSquaredFloat, SafeRunsFloat);
+                    Value *MeanSquared = Builder.CreateFMul(Mean, Mean);
+                    Value *Variance = Builder.CreateFSub(MeanOfSquares, MeanSquared);
+                    
+                    Function *SqrtFn = Intrinsic::getDeclaration(&M, Intrinsic::sqrt, {Builder.getDoubleTy()});
+                    Value *StdDev = Builder.CreateCall(SqrtFn, {Variance});
+                    Value *CV = Builder.CreateFDiv(StdDev, Mean);
+                    
+                    // For versions with no runs, use max value
+                    Value *MaxVal = ConstantFP::get(Builder.getDoubleTy(), 1e9);
+                    Mean = Builder.CreateSelect(HasRuns, Mean, MaxVal);
+                    CV = Builder.CreateSelect(HasRuns, CV, MaxVal);
+                    
+                    Means.push_back(Mean);
+                    CVs.push_back(CV);
+                }
+                
+                // Find best and second-best versions
+                Value *BestMean = Means[0];
+                Value *BestCV = CVs[0];
+                Value *BestIdx = zero32;
+                Value *BestRunCount = TempRuns[0];
+                
+                for (int i = 1; i < NUM_VERSIONS; i++)
+                {
+                    Value *IsBetter = Builder.CreateFCmpOLT(Means[i], BestMean);
+                    BestMean = Builder.CreateSelect(IsBetter, Means[i], BestMean);
+                    BestCV = Builder.CreateSelect(IsBetter, CVs[i], BestCV);
+                    BestIdx = Builder.CreateSelect(IsBetter, ConstantInt::get(i32Ty, i), BestIdx);
+                    BestRunCount = Builder.CreateSelect(IsBetter, TempRuns[i], BestRunCount);
+                }
+                
+                // Find second best (for clear winner check)
+                Value *SecondBestMean = ConstantFP::get(Builder.getDoubleTy(), 1e9);
+                for (int i = 0; i < NUM_VERSIONS; i++)
+                {
+                    Value *IsNotBest = Builder.CreateICmpNE(ConstantInt::get(i32Ty, i), BestIdx);
+                    Value *IsBetterThanSecond = Builder.CreateFCmpOLT(Means[i], SecondBestMean);
+                    Value *UpdateSecond = Builder.CreateAnd(IsNotBest, IsBetterThanSecond);
+                    SecondBestMean = Builder.CreateSelect(UpdateSecond, Means[i], SecondBestMean);
+                }
+                
+                // Convergence criteria
+                // 1. Minimum samples: best version has >= 50 runs
+                Value *MinSamples = ConstantInt::get(i32Ty, 50);
+                Value *HasMinSamples = Builder.CreateICmpUGE(BestRunCount, MinSamples);
+                
+                // 2. Clear winner: best is >15% better than second best
+                Value *Improvement = Builder.CreateFSub(SecondBestMean, BestMean);
+                Value *ImprovementRatio = Builder.CreateFDiv(Improvement, SecondBestMean);
+                Value *ClearWinnerThreshold = ConstantFP::get(Builder.getDoubleTy(), 0.15); // 15%
+                Value *IsClearWinner = Builder.CreateFCmpOGT(ImprovementRatio, ClearWinnerThreshold);
+                
+                // 3. Low variance: CV < 10%
+                Value *CVThreshold = ConstantFP::get(Builder.getDoubleTy(), 0.10); // 10%
+                Value *IsLowVariance = Builder.CreateFCmpOLT(BestCV, CVThreshold);
+                
+                // All criteria must be true for convergence
+                Value *HasConverged = Builder.CreateAnd(HasMinSamples, 
+                    Builder.CreateAnd(IsClearWinner, IsLowVariance));
+                
+                // Debug print (if enabled)
+                #if ADAPTIVE_DEBUG_PRINTS
+                Value *ConvergedMsg = Builder.CreateGlobalStringPtr(
+                    "EARLY_STOP_CHECK %s: samples=%u, converged=%d\n");
+                Value *ConvergedInt = Builder.CreateZExt(HasConverged, i32Ty);
+                Builder.CreateCall(Printf, {ConvergedMsg, FuncName, SampleCount, ConvergedInt});
+                #endif
+                
+                // If converged, transition to optimal; otherwise continue profiling
+                Builder.CreateCondBr(HasConverged, TransitionToOptimalBB, ContinueProfilingBB);
+            }
+            
+            // Continue profiling block
+            Builder.SetInsertPoint(ContinueProfilingBB);
+
             // Check if this call should be sampled (every Nth call)
             Value *ShouldSample = Builder.CreateICmpEQ(
                 Builder.CreateURem(SampleCount, sampleRate), zero32);
@@ -1290,7 +1418,9 @@ namespace llvm
 #if ADAPTIVE_DEBUG_PRINTS
         Value *InitMsg = Builder.CreateGlobalStringPtr(
             "INIT Adaptive dispatcher with DYNAMIC THRESHOLDS initialized\n"
-            "      Thresholds calculated per-function based on expected call frequency\n");
+            "      PHASE 1: Intelligent version generation enabled\n"
+            "      PHASE 2: Statistical selection with variance tracking enabled\n"
+            "      PHASE 3: Early stopping with convergence detection enabled\n");
         Builder.CreateCall(Printf, {InitMsg});
 #endif
         Builder.CreateRetVoid();
