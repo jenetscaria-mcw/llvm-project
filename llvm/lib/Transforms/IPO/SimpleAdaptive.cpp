@@ -1097,10 +1097,14 @@ namespace llvm
                 CurrentCyclesSquared.push_back(CyclesSquaredLoad);
             }
 
-            // Statistical selection with variance
             Value *BestVersion = zero32;
             Value *BestAvg = nullptr;
-            Value *BestStdErr = nullptr;
+            Value *BestCV = nullptr;
+            
+            // Track all versions for fallback
+            std::vector<Value *> AllMeans;
+            std::vector<Value *> AllCVs;
+            std::vector<Value *> AllStdErrs;
 
             for (int i = 0; i < NUM_VERSIONS; i++)
             {
@@ -1128,54 +1132,67 @@ namespace llvm
                 Value *SqrtN = Builder.CreateCall(SqrtFn, {RunsFloat});
                 Value *StdErr = Builder.CreateFDiv(StdDev, SqrtN);
                 
+                // CV-FILTER: Calculate coefficient of variation (CV = stderr / mean)
+                Value *CV = Builder.CreateFDiv(StdErr, MeanFloat);
+                
                 Value *MaxValFloat = ConstantFP::get(Builder.getDoubleTy(),
                                                      std::numeric_limits<double>::max());
                 Value *FinalAvg = Builder.CreateSelect(HasRuns, MeanFloat, MaxValFloat);
                 Value *FinalStdErr = Builder.CreateSelect(HasRuns, StdErr, MaxValFloat);
+                Value *FinalCV = Builder.CreateSelect(HasRuns, CV, MaxValFloat);
+                
+                // Store for later (needed for fallback)
+                AllMeans.push_back(FinalAvg);
+                AllCVs.push_back(FinalCV);
+                AllStdErrs.push_back(FinalStdErr);
 
                 if (i == 0)
                 {
                     BestAvg = FinalAvg;
-                    BestStdErr = FinalStdErr;
+                    BestCV = FinalCV;
                     BestVersion = ConstantInt::get(i32Ty, 0);
                 }
                 else
                 {
-                    // Improvement must exceed: 1.96 * combined_stderr + 5% minimum
+                    // CV-FILTER: Only consider versions with CV < 50%
+                    Value *CVThreshold = ConstantFP::get(Builder.getDoubleTy(), 0.50); // 50%
                     
-                    Value *AbsImprovement = Builder.CreateFSub(BestAvg, FinalAvg);
+                    // Check if current version is reliable
+                    Value *CurrentReliable = Builder.CreateFCmpOLT(FinalCV, CVThreshold);
                     
-                    // Combined standard error for 95% confidence
-                    Value *CombinedStdErr = Builder.CreateFAdd(BestStdErr, FinalStdErr);
-                    Value *ConfidenceInterval = Builder.CreateFMul(
-                        ConstantFP::get(Builder.getDoubleTy(), 1.96), CombinedStdErr);
+                    // Check if best version is reliable
+                    Value *BestReliable = Builder.CreateFCmpOLT(BestCV, CVThreshold);
                     
-                    // Minimum threshold: 5% of current best
-                    Value *MinThreshold = Builder.CreateFMul(BestAvg, 
-                        ConstantFP::get(Builder.getDoubleTy(), 0.05));
+                    // Check if current is better than best
+                    Value *IsFaster = Builder.CreateFCmpOLT(FinalAvg, BestAvg);
                     
-                    // Total required improvement
-                    Value *RequiredImprovement = Builder.CreateFAdd(ConfidenceInterval, MinThreshold);
+                    Value *BothReliable = Builder.CreateAnd(CurrentReliable, BestReliable);
+                    Value *OnlyCurrentReliable = Builder.CreateAnd(CurrentReliable, 
+                        Builder.CreateNot(BestReliable));
                     
-                    // Only switch if significantly better
-                    Value *IsSignificantlyBetter = Builder.CreateFCmpOGT(AbsImprovement, RequiredImprovement);
+                    // Switch if: (both reliable AND faster) OR (only current reliable)
+                    Value *ShouldSwitch = Builder.CreateOr(
+                        Builder.CreateAnd(BothReliable, IsFaster),
+                        OnlyCurrentReliable);
                     
-                    BestVersion = Builder.CreateSelect(IsSignificantlyBetter,
+                    BestVersion = Builder.CreateSelect(ShouldSwitch,
                                                        ConstantInt::get(i32Ty, i), BestVersion);
-                    BestAvg = Builder.CreateSelect(IsSignificantlyBetter, FinalAvg, BestAvg);
-                    BestStdErr = Builder.CreateSelect(IsSignificantlyBetter, FinalStdErr, BestStdErr);
+                    BestAvg = Builder.CreateSelect(ShouldSwitch, FinalAvg, BestAvg);
+                    BestCV = Builder.CreateSelect(ShouldSwitch, FinalCV, BestCV);
                 }
 
-                // Print stats
+                // Print stats with CV
                 Value *AvgForDisplay = Builder.CreateFPToUI(FinalAvg, i64Ty);
                 #if ADAPTIVE_DEBUG_PRINTS
                 Value *StdErrForDisplay = Builder.CreateFPToUI(FinalStdErr, i64Ty);
+                Value *CVPercent = Builder.CreateFMul(FinalCV, ConstantFP::get(Builder.getDoubleTy(), 100.0));
+                Value *CVForDisplay = Builder.CreateFPToUI(CVPercent, i32Ty);
                 Value *StatsMsg = Builder.CreateGlobalStringPtr(
-                    "STATS %s - V%d: total_cycles=%llu, runs=%u, avg=%llu, stderr=%llu\n");
+                    "STATS %s - V%d: total_cycles=%llu, runs=%u, avg=%llu, stderr=%llu, cv=%u%%\n");
                 Builder.CreateCall(Printf, {StatsMsg, FuncName,
                                             ConstantInt::get(i32Ty, i),
                                             CurrentCycles[i], CurrentRuns[i], 
-                                            AvgForDisplay, StdErrForDisplay});
+                                            AvgForDisplay, StdErrForDisplay, CVForDisplay});
                 #else
                 Value *StatsMsg = Builder.CreateGlobalStringPtr(
                     "STATS %s - V%d: total_cycles=%llu, runs=%u, avg=%llu\n");
@@ -1183,6 +1200,62 @@ namespace llvm
                                             ConstantInt::get(i32Ty, i),
                                             CurrentCycles[i], CurrentRuns[i], AvgForDisplay});
                 #endif
+            }
+            
+            // FALLBACK: If best version has CV >= 50% (all unreliable), use weighted score
+            Value *CVThreshold = ConstantFP::get(Builder.getDoubleTy(), 0.50);
+            Value *BestIsUnreliable = Builder.CreateFCmpOGE(BestCV, CVThreshold);
+            
+            BasicBlock *UseFallbackBB = BasicBlock::Create(Ctx, "use_fallback", Wrapper);
+            BasicBlock *SkipFallbackBB = BasicBlock::Create(Ctx, "skip_fallback", Wrapper);
+            Builder.CreateCondBr(BestIsUnreliable, UseFallbackBB, SkipFallbackBB);
+            
+            // Fallback block: All versions unreliable, use weighted score (mean × (1 + CV))
+            Builder.SetInsertPoint(UseFallbackBB);
+            {
+                #if ADAPTIVE_DEBUG_PRINTS
+                Value *FallbackMsg = Builder.CreateGlobalStringPtr(
+                    "WARNING %s: All versions unreliable (CV>=50%%), using weighted score fallback\n");
+                Builder.CreateCall(Printf, {FallbackMsg, FuncName});
+                #endif
+                
+                // Calculate weighted scores for all versions
+                Value *FallbackBest = zero32;
+                Value *BestScore = nullptr;
+                
+                for (int i = 0; i < NUM_VERSIONS; i++)
+                {
+                    // Weighted score = mean × (1 + CV)
+                    Value *OnePlusCV = Builder.CreateFAdd(
+                        ConstantFP::get(Builder.getDoubleTy(), 1.0), AllCVs[i]);
+                    Value *Score = Builder.CreateFMul(AllMeans[i], OnePlusCV);
+                    
+                    if (i == 0)
+                    {
+                        BestScore = Score;
+                        FallbackBest = ConstantInt::get(i32Ty, 0);
+                    }
+                    else
+                    {
+                        Value *IsBetter = Builder.CreateFCmpOLT(Score, BestScore);
+                        FallbackBest = Builder.CreateSelect(IsBetter,
+                                                            ConstantInt::get(i32Ty, i), FallbackBest);
+                        BestScore = Builder.CreateSelect(IsBetter, Score, BestScore);
+                    }
+                }
+                
+                // Override BestVersion with fallback result
+                Builder.CreateBr(SkipFallbackBB);
+                
+                // Skip fallback - use original BestVersion
+                Builder.SetInsertPoint(SkipFallbackBB);
+                
+                // PHI node to merge results
+                PHINode *FinalBestVersion = Builder.CreatePHI(i32Ty, 2);
+                FinalBestVersion->addIncoming(FallbackBest, UseFallbackBB);
+                FinalBestVersion->addIncoming(BestVersion, DoTransitionBB);
+                
+                BestVersion = FinalBestVersion;
             }
 
             // Store best version
@@ -1289,8 +1362,7 @@ namespace llvm
         // NEW: Print group configurations
 #if ADAPTIVE_DEBUG_PRINTS
         Value *InitMsg = Builder.CreateGlobalStringPtr(
-            "INIT Adaptive dispatcher with DYNAMIC THRESHOLDS initialized\n"
-            "      Thresholds calculated per-function based on expected call frequency\n");
+            "INIT Adaptive dispatcher with DYNAMIC THRESHOLDS initialized\n");
         Builder.CreateCall(Printf, {InitMsg});
 #endif
         Builder.CreateRetVoid();
