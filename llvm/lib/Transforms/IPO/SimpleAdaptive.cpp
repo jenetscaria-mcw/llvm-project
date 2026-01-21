@@ -474,71 +474,84 @@ namespace llvm
             break;
             
         case 1:
-            // VECTORIZATION VERSION -  Only apply if beneficial
+            // V1: VECTORIZATION-FOCUSED 
+            NewF->addFnAttr(Attribute::NoInline);
+            
             if (fc.canBenefitFromVectorization)
             {
-                NewF->addFnAttr(Attribute::NoInline);
+                // Best case: aggressive vectorization
                 NewF->addFnAttr("prefer-vector-width", "512");
                 NewF->addFnAttr("min-legal-vector-width", "512");
                 NewF->addFnAttr("target-features", "+avx512f,+avx512vl");
-                NewF->addFnAttr("vectorize-predicate", "enable");
             }
             else if (fc.isMemoryIntensive)
             {
-                // Alternative for memory-bound: prefetching
+                // Memory-bound: prefetching
                 NewF->addFnAttr("prefetch-distance", "128");
             }
-            // else: no special optimization for V1
+            else
+            {
+                // Fallback: light unrolling (always different from V0)
+                NewF->addFnAttr("unroll-count", "4");
+            }
             break;
 
         case 2: 
-            // UNROLLING VERSION -  Adaptive unroll factor
-            if (fc.canBenefitFromUnrolling)
+            // V2: UNROLLING-FOCUSED 
+            NewF->addFnAttr(Attribute::NoInline);
+            
+            if (fc.canBenefitFromUnrolling && fc.isSmall)
             {
-                NewF->addFnAttr(Attribute::NoInline);
-                
-                // Adaptive unroll factor based on function size
-                if (fc.isSmall)
-                {
-                    // Aggressive unrolling for small functions
-                    NewF->addFnAttr("unroll-count", "16");
-                    NewF->addFnAttr("unroll-full-unroll-max", "1024");
-                    NewF->addFnAttr("interleave-count", "4");
-                }
-                else if (fc.isMedium)
-                {
-                    // Moderate unrolling for medium functions
-                    NewF->addFnAttr("unroll-count", "8");
-                    NewF->addFnAttr("interleave-count", "2");
-                }
-                // else: minimal unrolling for large functions (just NoInline)
+                // Best case: aggressive unrolling for small loops
+                NewF->addFnAttr("unroll-count", "16");
+                NewF->addFnAttr("unroll-full-unroll-max", "1024");
+                NewF->addFnAttr("interleave-count", "4");
             }
-            else if (fc.isMemoryIntensive && !fc.isLarge)
+            else if (fc.canBenefitFromUnrolling && fc.isMedium)
             {
-                // For memory-bound, prefer smaller code size
+                // Medium: moderate unrolling
+                NewF->addFnAttr("unroll-count", "8");
+                NewF->addFnAttr("interleave-count", "2");
+            }
+            else if (fc.canBenefitFromUnrolling)
+            {
+                // Large functions: conservative unrolling
+                NewF->addFnAttr("unroll-count", "4");
+            }
+            else
+            {
+                // Fallback: always apply at least minimal unrolling
                 NewF->addFnAttr("unroll-count", "2");
             }
             break;
 
         case 3: 
-            // SPECIALTY VERSION -  Conditional strategies
+            // V3: SPECIALTY 
             if (fc.canBenefitFromInlining)
             {
-                // Small functions: aggressive inlining
+                // Best case: aggressive inlining for small functions
                 NewF->addFnAttr(Attribute::AlwaysInline);
                 NewF->addFnAttr("inline-threshold", "100000");
             }
             else if (fc.canBenefitFromFastMath)
             {
-                // FP-heavy functions: fast math
+                // FP-heavy: fast math
+                NewF->addFnAttr(Attribute::NoInline);
                 NewF->addFnAttr("unsafe-fp-math", "true");
                 NewF->addFnAttr("no-nans-fp-math", "true");
                 NewF->addFnAttr("no-infs-fp-math", "true");
             }
             else if (fc.manyBranches)
             {
-                // Branch-heavy: keep code size small for better branch prediction
-                // No aggressive optimizations
+                // Branch-heavy: optimize for size (better branch prediction)
+                NewF->addFnAttr(Attribute::OptimizeForSize);
+                NewF->addFnAttr(Attribute::NoInline);
+            }
+            else
+            {
+                // Fallback: moderate unrolling (different from V1/V2)
+                NewF->addFnAttr(Attribute::NoInline);
+                NewF->addFnAttr("unroll-count", "6");
             }
             break;
         }
@@ -1097,6 +1110,7 @@ namespace llvm
                 CurrentCyclesSquared.push_back(CyclesSquaredLoad);
             }
 
+            // CV-BASED SELECTION: Filter by reliability (CV < 50%) + pick minimum mean
             Value *BestVersion = zero32;
             Value *BestAvg = nullptr;
             Value *BestCV = nullptr;
@@ -1166,13 +1180,30 @@ namespace llvm
                     // Check if current is better than best
                     Value *IsFaster = Builder.CreateFCmpOLT(FinalAvg, BestAvg);
                     
+                    // MINIMUM IMPROVEMENT: Require >10% improvement to avoid noise
+                    // This prevents switching on 1-2 cycle differences (e.g., 46 vs 48)
+                    Value *ImprovementAbs = Builder.CreateFSub(BestAvg, FinalAvg);
+                    Value *ImprovementRatio = Builder.CreateFDiv(ImprovementAbs, BestAvg);
+                    Value *MinImprovement = ConstantFP::get(Builder.getDoubleTy(), 0.10); // 10%
+                    Value *SignificantImprovement = Builder.CreateFCmpOGT(ImprovementRatio, MinImprovement);
+                    
+                    // Decision logic:
+                    // 1. If both reliable: pick faster AND improvement > 10%
+                    // 2. If only current reliable: pick current
+                    // 3. If only best reliable: keep best
+                    // 4. If both unreliable: handle in fallback
+                    
                     Value *BothReliable = Builder.CreateAnd(CurrentReliable, BestReliable);
                     Value *OnlyCurrentReliable = Builder.CreateAnd(CurrentReliable, 
                         Builder.CreateNot(BestReliable));
                     
-                    // Switch if: (both reliable AND faster) OR (only current reliable)
-                    Value *ShouldSwitch = Builder.CreateOr(
+                    // Switch if: (both reliable AND faster AND >10% improvement) OR (only current reliable)
+                    Value *BothReliableAndSignificant = Builder.CreateAnd(
                         Builder.CreateAnd(BothReliable, IsFaster),
+                        SignificantImprovement);
+                    
+                    Value *ShouldSwitch = Builder.CreateOr(
+                        BothReliableAndSignificant,
                         OnlyCurrentReliable);
                     
                     BestVersion = Builder.CreateSelect(ShouldSwitch,
@@ -1203,6 +1234,9 @@ namespace llvm
             }
             
             // FALLBACK: If best version has CV >= 50% (all unreliable), use weighted score
+            // Save current block before creating conditional branch
+            BasicBlock *BeforeFallbackBB = Builder.GetInsertBlock();
+            
             Value *CVThreshold = ConstantFP::get(Builder.getDoubleTy(), 0.50);
             Value *BestIsUnreliable = Builder.CreateFCmpOGE(BestCV, CVThreshold);
             
@@ -1244,16 +1278,16 @@ namespace llvm
                     }
                 }
                 
-                // Override BestVersion with fallback result
+                // Branch to skip fallback with fallback result
                 Builder.CreateBr(SkipFallbackBB);
                 
                 // Skip fallback - use original BestVersion
                 Builder.SetInsertPoint(SkipFallbackBB);
                 
-                // PHI node to merge results
+                // PHI node to merge results (FIXED: use correct predecessor blocks)
                 PHINode *FinalBestVersion = Builder.CreatePHI(i32Ty, 2);
                 FinalBestVersion->addIncoming(FallbackBest, UseFallbackBB);
-                FinalBestVersion->addIncoming(BestVersion, DoTransitionBB);
+                FinalBestVersion->addIncoming(BestVersion, BeforeFallbackBB);
                 
                 BestVersion = FinalBestVersion;
             }
