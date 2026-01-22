@@ -12,7 +12,7 @@
 #include <vector>
 #include <algorithm>
 
-#define ADAPTIVE_DEBUG_PRINTS 1
+#define ADAPTIVE_DEBUG_PRINTS 0
 
 using namespace llvm;
 
@@ -220,9 +220,9 @@ namespace llvm
         FunctionGroupConfig config;
 
         // Configuration parameters
-        const uint64_t MIN_PROFILE_SAMPLES = 400;
-        const uint64_t MAX_PROFILE_SAMPLES = 20000;
-        const double PROFILE_PERCENTAGE = 0.03;
+        const uint64_t MIN_PROFILE_SAMPLES = 40;      // Was 200 (5× reduction)
+        const uint64_t MAX_PROFILE_SAMPLES = 400;     // Was 4000 (10× reduction)
+        const double PROFILE_PERCENTAGE = 0.001;      // Was 0.01 (10× reduction = 0.1%)
         const double PROFILING_PHASE_PERCENTAGE = 0.20; // Use 20% of calls for profiling, 80% for optimal
 
         // Calculate target profiling samples (3% of total calls)
@@ -238,7 +238,7 @@ namespace llvm
         config.profilingThreshold = (int)targetSamples;
 
 
-        int warmupRounds = std::max(10, (int)(targetSamples * 0.01)); // 1% of samples
+        int warmupRounds = 0;  
         warmupRounds = std::min(warmupRounds, 50); // Max 50 rounds (200 total warmup calls)
         config.warmupRuns = warmupRounds; // Each round = 4 calls (one per version)
 
@@ -299,6 +299,75 @@ namespace llvm
                 adaptiveFunctions.push_back(&F);
             }
         }
+        
+        std::vector<Function *> filteredFunctions;
+        for (Function *F : adaptiveFunctions)
+        {
+            // Count instructions - skip tiny functions
+            size_t instructionCount = 0;
+            for (BasicBlock &BB : *F) {
+                instructionCount += BB.size();
+            }
+            if (instructionCount < 100) {  
+                errs() << "SKIP (tiny): " << F->getName() 
+                       << " (" << instructionCount << " instructions)\n";
+                continue;
+            }
+            
+            //  Skip cold functions
+            uint64_t expectedCalls = getExpectedCallCount(F);
+            if (expectedCalls < 50000) { 
+                errs() << "SKIP (cold): " << F->getName() 
+                       << " (" << expectedCalls << " expected calls)\n";
+                continue;
+            }
+            
+            // Must have loops
+            bool hasLoops = false;
+            int branchCount = 0;
+            for (BasicBlock &BB : *F) {
+                for (Instruction &I : BB) {
+                    if (isa<BranchInst>(&I)) {
+                        branchCount++;
+                        if (branchCount >= 2) {
+                            hasLoops = true;
+                            break;
+                        }
+                    }
+                }
+                if (hasLoops) break;
+            }
+            
+            if (!hasLoops) {
+                errs() << "SKIP (no loops): " << F->getName() << "\n";
+                continue;
+            }
+            
+            // Must have optimization potential
+            FunctionCharacteristics fc = analyzeFunctionCharacteristics(F);
+            if (!fc.canBenefitFromVectorization && 
+                !fc.canBenefitFromUnrolling &&
+                !fc.canBenefitFromFastMath) {
+                errs() << "SKIP (no opt potential): " << F->getName() << "\n";
+                continue;
+            }
+            
+            // Skip if too memory-bound
+            if (fc.isMemoryIntensive && fc.loadStoreCount > instructionCount * 0.7) {
+                errs() << "SKIP (memory-bound): " << F->getName() 
+                       << " (" << fc.loadStoreCount << " mem ops)\n";
+                continue;
+            }
+            
+            // Passed all filters
+            errs() << "ACCEPT: " << F->getName() 
+                   << " (inst=" << instructionCount 
+                   << ", calls=" << expectedCalls << ")\n";
+            filteredFunctions.push_back(F);
+        }
+        
+        // Use filtered list
+        adaptiveFunctions = filteredFunctions;
         if (adaptiveFunctions.empty())
         {
             return PreservedAnalyses::all();
@@ -1224,12 +1293,12 @@ namespace llvm
                                             ConstantInt::get(i32Ty, i),
                                             CurrentCycles[i], CurrentRuns[i], 
                                             AvgForDisplay, StdErrForDisplay, CVForDisplay});
-                #else
-                Value *StatsMsg = Builder.CreateGlobalStringPtr(
-                    "STATS %s - V%d: total_cycles=%llu, runs=%u, avg=%llu\n");
-                Builder.CreateCall(Printf, {StatsMsg, FuncName,
-                                            ConstantInt::get(i32Ty, i),
-                                            CurrentCycles[i], CurrentRuns[i], AvgForDisplay});
+                // #else
+                // Value *StatsMsg = Builder.CreateGlobalStringPtr(
+                //     "STATS %s - V%d: total_cycles=%llu, runs=%u, avg=%llu\n");
+                // Builder.CreateCall(Printf, {StatsMsg, FuncName,
+                //                             ConstantInt::get(i32Ty, i),
+                //                             CurrentCycles[i], CurrentRuns[i], AvgForDisplay});
                 #endif
             }
             
@@ -1396,7 +1465,7 @@ namespace llvm
         // NEW: Print group configurations
 #if ADAPTIVE_DEBUG_PRINTS
         Value *InitMsg = Builder.CreateGlobalStringPtr(
-            "INIT Adaptive dispatcher with DYNAMIC THRESHOLDS initialized\n");
+            "INIT Adaptive dispatcher - PERFORMANCE \n");
         Builder.CreateCall(Printf, {InitMsg});
 #endif
         Builder.CreateRetVoid();
