@@ -220,9 +220,9 @@ namespace llvm
         FunctionGroupConfig config;
 
         // Configuration parameters
-        const uint64_t MIN_PROFILE_SAMPLES = 40;      // Was 200 (5× reduction)
-        const uint64_t MAX_PROFILE_SAMPLES = 400;     // Was 4000 (10× reduction)
-        const double PROFILE_PERCENTAGE = 0.001;      // Was 0.01 (10× reduction = 0.1%)
+        const uint64_t MIN_PROFILE_SAMPLES = 200;      // Was 200 (5× reduction)
+        const uint64_t MAX_PROFILE_SAMPLES = 4000;     // Was 4000 (10× reduction)
+        const double PROFILE_PERCENTAGE = 0.01;      // Was 0.01 (10× reduction = 0.1%)
         const double PROFILING_PHASE_PERCENTAGE = 0.20; // Use 20% of calls for profiling, 80% for optimal
 
         // Calculate target profiling samples (3% of total calls)
