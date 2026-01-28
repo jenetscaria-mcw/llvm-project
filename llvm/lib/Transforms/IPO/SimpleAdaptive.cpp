@@ -343,14 +343,14 @@ namespace llvm
                 continue;
             }
             
-            // Must have optimization potential
-            FunctionCharacteristics fc = analyzeFunctionCharacteristics(F);
-            if (!fc.canBenefitFromVectorization && 
-                !fc.canBenefitFromUnrolling &&
-                !fc.canBenefitFromFastMath) {
-                errs() << "SKIP (no opt potential): " << F->getName() << "\n";
-                continue;
-            }
+            // // Must have optimization potential
+            // FunctionCharacteristics fc = analyzeFunctionCharacteristics(F);
+            // if (!fc.canBenefitFromVectorization && 
+            //     !fc.canBenefitFromUnrolling &&
+            //     !fc.canBenefitFromFastMath) {
+            //     errs() << "SKIP (no opt potential): " << F->getName() << "\n";
+            //     continue;
+            // }
             
             // Skip if too memory-bound
             if (fc.isMemoryIntensive && fc.loadStoreCount > instructionCount * 0.7) {
