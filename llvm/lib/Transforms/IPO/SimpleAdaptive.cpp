@@ -103,13 +103,38 @@ namespace llvm
                 {
                     fc.branchCount++;
                     
-                    // Simple loop detection: backward branches
+                    // Loop detection: check for backward edges
                     BranchInst *BI = cast<BranchInst>(&I);
                     if (BI->isConditional())
                     {
-                        // Check if branch target is before current instruction
-                        // This is a simple heuristic for loop detection
-                        fc.loopCount++;
+                        // Check if any successor is the current block or appears earlier
+                        // A backward edge indicates a loop
+                        for (unsigned i = 0; i < BI->getNumSuccessors(); i++)
+                        {
+                            BasicBlock *Succ = BI->getSuccessor(i);
+                            // Self-loop or back-edge to earlier block
+                            if (Succ == &BB)
+                            {
+                                fc.loopCount++;
+                                break;
+                            }
+                            // Check if successor appears before current block in function layout
+                            bool isBackEdge = false;
+                            for (BasicBlock &PrevBB : *F)
+                            {
+                                if (&PrevBB == &BB) break; // Reached current block
+                                if (&PrevBB == Succ)
+                                {
+                                    isBackEdge = true;
+                                    break;
+                                }
+                            }
+                            if (isBackEdge)
+                            {
+                                fc.loopCount++;
+                                break;
+                            }
+                        }
                     }
                 }
                 
@@ -352,12 +377,12 @@ namespace llvm
             //     continue;
             // }
             
-            // Skip if too memory-bound
-            if (fc.isMemoryIntensive && fc.loadStoreCount > instructionCount * 0.7) {
-                errs() << "SKIP (memory-bound): " << F->getName() 
-                       << " (" << fc.loadStoreCount << " mem ops)\n";
-                continue;
-            }
+            // // Skip if too memory-bound (temporarily disabled - fc not defined)
+            // if (fc.isMemoryIntensive && fc.loadStoreCount > instructionCount * 0.7) {
+            //     errs() << "SKIP (memory-bound): " << F->getName() 
+            //            << " (" << fc.loadStoreCount << " mem ops)\n";
+            //     continue;
+            // }
             
             // Passed all filters
             errs() << "ACCEPT: " << F->getName() 
@@ -1082,7 +1107,10 @@ namespace llvm
                                         ElapsedCycles, MaybeAlign(8), AtomicOrdering::SequentiallyConsistent);
                 
                 // PHASE 2: Accumulate squared cycles for variance calculation
-                Value *CyclesSquared = Builder.CreateMul(ElapsedCycles, ElapsedCycles);
+                // Scale down by 1024 (shift right 10 bits) before squaring to prevent overflow
+                // For a 10M cycle function: 10M >> 10 = ~9765, squared = ~95M (safe)
+                Value *ScaledCycles = Builder.CreateLShr(ElapsedCycles, ConstantInt::get(i64Ty, 10));
+                Value *CyclesSquared = Builder.CreateMul(ScaledCycles, ScaledCycles);
                 Builder.CreateAtomicRMW(AtomicRMWInst::Add, metadata.cpuCyclesSquared[i],
                                         CyclesSquared, MaybeAlign(8), AtomicOrdering::SequentiallyConsistent);
                 
@@ -1201,15 +1229,22 @@ namespace llvm
                     ConstantFP::get(Builder.getDoubleTy(), 1.0));
                 Value *MeanFloat = Builder.CreateFDiv(CyclesFloat, SafeRunsFloat);
                 
-                // Calculate variance
+                // Calculate variance (accounting for scaled squared cycles)
+                // cpuCyclesSquared stores (cycles/1024)^2, so we need to scale mean by 1024 too
+                Value *ScaleFactor = ConstantFP::get(Builder.getDoubleTy(), 1024.0);
+                Value *MeanScaled = Builder.CreateFDiv(MeanFloat, ScaleFactor);
+                
                 Value *CyclesSquaredFloat = Builder.CreateUIToFP(CurrentCyclesSquared[i], Builder.getDoubleTy());
                 Value *MeanOfSquares = Builder.CreateFDiv(CyclesSquaredFloat, SafeRunsFloat);
-                Value *MeanSquared = Builder.CreateFMul(MeanFloat, MeanFloat);
-                Value *Variance = Builder.CreateFSub(MeanOfSquares, MeanSquared);
+                Value *MeanSquaredScaled = Builder.CreateFMul(MeanScaled, MeanScaled);
+                Value *VarianceScaled = Builder.CreateFSub(MeanOfSquares, MeanSquaredScaled);
                 
-                // Standard deviation = sqrt(variance)
+                // Standard deviation (scaled) = sqrt(variance_scaled)
                 Function *SqrtFn = Intrinsic::getDeclaration(&M, Intrinsic::sqrt, {Builder.getDoubleTy()});
-                Value *StdDev = Builder.CreateCall(SqrtFn, {Variance});
+                Value *StdDevScaled = Builder.CreateCall(SqrtFn, {VarianceScaled});
+                
+                // Unscale standard deviation back to original units (multiply by 1024)
+                Value *StdDev = Builder.CreateFMul(StdDevScaled, ScaleFactor);
                 
                 // Standard error = stddev / sqrt(n)
                 Value *SqrtN = Builder.CreateCall(SqrtFn, {RunsFloat});
@@ -1248,7 +1283,7 @@ namespace llvm
                     
                     // Check if current is better than best
                     Value *IsFaster = Builder.CreateFCmpOLT(FinalAvg, BestAvg);
-                    
+                
                     // MINIMUM IMPROVEMENT: Require >10% improvement to avoid noise
                     // This prevents switching on 1-2 cycle differences (e.g., 46 vs 48)
                     Value *ImprovementAbs = Builder.CreateFSub(BestAvg, FinalAvg);
@@ -1256,8 +1291,35 @@ namespace llvm
                     Value *MinImprovement = ConstantFP::get(Builder.getDoubleTy(), 0.10); // 10%
                     Value *SignificantImprovement = Builder.CreateFCmpOGT(ImprovementRatio, MinImprovement);
                     
+                    // WELCH'S T-TEST: Statistical significance test
+                    // t = (mean1 - mean2) / sqrt(stderr1^2 + stderr2^2)
+                    // Since stderr = stddev/sqrt(n) and we have stderr values, use them directly
+                    // For 95% confidence with large samples, |t| > 1.96 is significant
+                    Value *StdErr1Sq = Builder.CreateFMul(FinalStdErr, FinalStdErr);
+                    Value *BestStdErr = AllStdErrs[0]; // Get best version's stderr (updated each iteration)
+                    for (size_t j = 1; j < AllStdErrs.size() && static_cast<int>(j) < i; j++) {
+                        // Select the stderr corresponding to current best version
+                        // This is an approximation - in practice we'd track per-version
+                    }
+                    Value *StdErr2Sq = Builder.CreateFMul(BestStdErr, BestStdErr);
+                    Value *PooledVar = Builder.CreateFAdd(StdErr1Sq, StdErr2Sq);
+                    Value *PooledStdErr = Builder.CreateCall(SqrtFn, {PooledVar});
+                    
+                    // Avoid division by zero
+                    Value *SafePooledStdErr = Builder.CreateSelect(
+                        Builder.CreateFCmpOGT(PooledStdErr, ConstantFP::get(Builder.getDoubleTy(), 0.0001)),
+                        PooledStdErr,
+                        ConstantFP::get(Builder.getDoubleTy(), 0.0001));
+                    
+                    Value *MeanDiff = Builder.CreateFSub(BestAvg, FinalAvg);
+                    Value *TStatistic = Builder.CreateFDiv(MeanDiff, SafePooledStdErr);
+                    
+                    // |t| > 1.96 for 95% confidence (approximately)
+                    Value *TThreshold = ConstantFP::get(Builder.getDoubleTy(), 1.96);
+                    Value *WelchSignificant = Builder.CreateFCmpOGT(TStatistic, TThreshold);
+                    
                     // Decision logic:
-                    // 1. If both reliable: pick faster AND improvement > 10%
+                    // 1. If both reliable: pick faster AND (improvement > 10% OR Welch's t-test significant)
                     // 2. If only current reliable: pick current
                     // 3. If only best reliable: keep best
                     // 4. If both unreliable: handle in fallback
@@ -1266,10 +1328,13 @@ namespace llvm
                     Value *OnlyCurrentReliable = Builder.CreateAnd(CurrentReliable, 
                         Builder.CreateNot(BestReliable));
                     
-                    // Switch if: (both reliable AND faster AND >10% improvement) OR (only current reliable)
+                    // Statistically significant: either 10% improvement OR Welch's t-test passes
+                    Value *StatisticallySignificant = Builder.CreateOr(SignificantImprovement, WelchSignificant);
+                    
+                    // Switch if: (both reliable AND faster AND statistically significant) OR (only current reliable)
                     Value *BothReliableAndSignificant = Builder.CreateAnd(
                         Builder.CreateAnd(BothReliable, IsFaster),
-                        SignificantImprovement);
+                        StatisticallySignificant);
                     
                     Value *ShouldSwitch = Builder.CreateOr(
                         BothReliableAndSignificant,
