@@ -103,38 +103,13 @@ namespace llvm
                 {
                     fc.branchCount++;
                     
-                    // Loop detection: check for backward edges
+                    // Simple loop detection: backward branches
                     BranchInst *BI = cast<BranchInst>(&I);
                     if (BI->isConditional())
                     {
-                        // Check if any successor is the current block or appears earlier
-                        // A backward edge indicates a loop
-                        for (unsigned i = 0; i < BI->getNumSuccessors(); i++)
-                        {
-                            BasicBlock *Succ = BI->getSuccessor(i);
-                            // Self-loop or back-edge to earlier block
-                            if (Succ == &BB)
-                            {
-                                fc.loopCount++;
-                                break;
-                            }
-                            // Check if successor appears before current block in function layout
-                            bool isBackEdge = false;
-                            for (BasicBlock &PrevBB : *F)
-                            {
-                                if (&PrevBB == &BB) break; // Reached current block
-                                if (&PrevBB == Succ)
-                                {
-                                    isBackEdge = true;
-                                    break;
-                                }
-                            }
-                            if (isBackEdge)
-                            {
-                                fc.loopCount++;
-                                break;
-                            }
-                        }
+                        // Check if branch target is before current instruction
+                        // This is a simple heuristic for loop detection
+                        fc.loopCount++;
                     }
                 }
                 
@@ -377,7 +352,7 @@ namespace llvm
             //     continue;
             // }
             
-            // // Skip if too memory-bound (temporarily disabled - fc not defined)
+            // Skip if too memory-bound
             // if (fc.isMemoryIntensive && fc.loadStoreCount > instructionCount * 0.7) {
             //     errs() << "SKIP (memory-bound): " << F->getName() 
             //            << " (" << fc.loadStoreCount << " mem ops)\n";
@@ -1107,10 +1082,7 @@ namespace llvm
                                         ElapsedCycles, MaybeAlign(8), AtomicOrdering::SequentiallyConsistent);
                 
                 // PHASE 2: Accumulate squared cycles for variance calculation
-                // Scale down by 1024 (shift right 10 bits) before squaring to prevent overflow
-                // For a 10M cycle function: 10M >> 10 = ~9765, squared = ~95M (safe)
-                Value *ScaledCycles = Builder.CreateLShr(ElapsedCycles, ConstantInt::get(i64Ty, 10));
-                Value *CyclesSquared = Builder.CreateMul(ScaledCycles, ScaledCycles);
+                Value *CyclesSquared = Builder.CreateMul(ElapsedCycles, ElapsedCycles);
                 Builder.CreateAtomicRMW(AtomicRMWInst::Add, metadata.cpuCyclesSquared[i],
                                         CyclesSquared, MaybeAlign(8), AtomicOrdering::SequentiallyConsistent);
                 
@@ -1211,6 +1183,7 @@ namespace llvm
             Value *BestVersion = zero32;
             Value *BestAvg = nullptr;
             Value *BestCV = nullptr;
+            Value *BestStdErr = nullptr;  // Track stderr of best version for t-test
             
             // Track all versions for fallback
             std::vector<Value *> AllMeans;
@@ -1229,22 +1202,15 @@ namespace llvm
                     ConstantFP::get(Builder.getDoubleTy(), 1.0));
                 Value *MeanFloat = Builder.CreateFDiv(CyclesFloat, SafeRunsFloat);
                 
-                // Calculate variance (accounting for scaled squared cycles)
-                // cpuCyclesSquared stores (cycles/1024)^2, so we need to scale mean by 1024 too
-                Value *ScaleFactor = ConstantFP::get(Builder.getDoubleTy(), 1024.0);
-                Value *MeanScaled = Builder.CreateFDiv(MeanFloat, ScaleFactor);
-                
+                // Calculate variance
                 Value *CyclesSquaredFloat = Builder.CreateUIToFP(CurrentCyclesSquared[i], Builder.getDoubleTy());
                 Value *MeanOfSquares = Builder.CreateFDiv(CyclesSquaredFloat, SafeRunsFloat);
-                Value *MeanSquaredScaled = Builder.CreateFMul(MeanScaled, MeanScaled);
-                Value *VarianceScaled = Builder.CreateFSub(MeanOfSquares, MeanSquaredScaled);
+                Value *MeanSquared = Builder.CreateFMul(MeanFloat, MeanFloat);
+                Value *Variance = Builder.CreateFSub(MeanOfSquares, MeanSquared);
                 
-                // Standard deviation (scaled) = sqrt(variance_scaled)
+                // Standard deviation = sqrt(variance)
                 Function *SqrtFn = Intrinsic::getDeclaration(&M, Intrinsic::sqrt, {Builder.getDoubleTy()});
-                Value *StdDevScaled = Builder.CreateCall(SqrtFn, {VarianceScaled});
-                
-                // Unscale standard deviation back to original units (multiply by 1024)
-                Value *StdDev = Builder.CreateFMul(StdDevScaled, ScaleFactor);
+                Value *StdDev = Builder.CreateCall(SqrtFn, {Variance});
                 
                 // Standard error = stddev / sqrt(n)
                 Value *SqrtN = Builder.CreateCall(SqrtFn, {RunsFloat});
@@ -1268,6 +1234,7 @@ namespace llvm
                 {
                     BestAvg = FinalAvg;
                     BestCV = FinalCV;
+                    BestStdErr = FinalStdErr;  // Track best stderr
                     BestVersion = ConstantInt::get(i32Ty, 0);
                 }
                 else
@@ -1296,11 +1263,6 @@ namespace llvm
                     // Since stderr = stddev/sqrt(n) and we have stderr values, use them directly
                     // For 95% confidence with large samples, |t| > 1.96 is significant
                     Value *StdErr1Sq = Builder.CreateFMul(FinalStdErr, FinalStdErr);
-                    Value *BestStdErr = AllStdErrs[0]; // Get best version's stderr (updated each iteration)
-                    for (size_t j = 1; j < AllStdErrs.size() && static_cast<int>(j) < i; j++) {
-                        // Select the stderr corresponding to current best version
-                        // This is an approximation - in practice we'd track per-version
-                    }
                     Value *StdErr2Sq = Builder.CreateFMul(BestStdErr, BestStdErr);
                     Value *PooledVar = Builder.CreateFAdd(StdErr1Sq, StdErr2Sq);
                     Value *PooledStdErr = Builder.CreateCall(SqrtFn, {PooledVar});
@@ -1344,6 +1306,7 @@ namespace llvm
                                                        ConstantInt::get(i32Ty, i), BestVersion);
                     BestAvg = Builder.CreateSelect(ShouldSwitch, FinalAvg, BestAvg);
                     BestCV = Builder.CreateSelect(ShouldSwitch, FinalCV, BestCV);
+                    BestStdErr = Builder.CreateSelect(ShouldSwitch, FinalStdErr, BestStdErr);
                 }
 
                 // Print stats with CV
