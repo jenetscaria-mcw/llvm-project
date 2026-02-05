@@ -189,6 +189,12 @@ PreservedAnalyses SimpleAdaptivePassImpl::run(Module &M, ModuleAnalysisManager &
 
     if (modified) {
         createInitializationFunction(M);
+        
+        // Tell linker to automatically link the adaptive runtime library
+        M.addModuleFlag(Module::AppendUnique, "Linker Options",
+                        MDNode::get(M.getContext(), {
+                            MDString::get(M.getContext(), "-lclang_rt.adaptive")
+                        }));
     }
 
     return modified ? PreservedAnalyses::none() : PreservedAnalyses::all();
@@ -201,6 +207,30 @@ Function *SimpleAdaptivePassImpl::createVersion(Function *Orig, int versionIndex
     Function *Clone = CloneFunction(Orig, VMap);
     Clone->setName(Orig->getName() + "_v" + std::to_string(versionIndex));
     Clone->setLinkage(GlobalValue::InternalLinkage);
+
+    // CRITICAL FIX: Remove adaptive attribute to prevent recursive processing
+    // Without this, cloned versions inherit the attribute and trigger infinite recursion
+    Clone->removeFnAttr("adaptive");
+    
+    // Also remove from metadata annotations if present
+    if (Clone->hasMetadata()) {
+        if (MDNode *MD = Clone->getMetadata("annotation")) {
+            // Create a new annotation list without "adaptive"
+            SmallVector<Metadata *, 4> NewAnnotations;
+            for (unsigned i = 0; i < MD->getNumOperands(); i++) {
+                if (MDString *MDS = dyn_cast<MDString>(MD->getOperand(i))) {
+                    if (MDS->getString() != "adaptive") {
+                        NewAnnotations.push_back(MD->getOperand(i));
+                    }
+                }
+            }
+            if (!NewAnnotations.empty()) {
+                Clone->setMetadata("annotation", MDNode::get(M.getContext(), NewAnnotations));
+            } else {
+                Clone->setMetadata("annotation", nullptr);
+            }
+        }
+    }
 
     FunctionCharacteristics fc = analyzeFunctionCharacteristics(Orig);
 
@@ -305,15 +335,24 @@ void SimpleAdaptivePassImpl::createWrapperStaticVars(FunctionMetadata &metadata,
 
 // Create Profiling Wrapper with CAS
 Function *SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metadata, Module &M) {
+    errs() << "[DEBUG] Starting createProfilingWrapper\n";
     LLVMContext &Ctx = M.getContext();
     Function *Orig = metadata.original;
     
+    errs() << "[DEBUG] Creating wrapper function type\n";
     FunctionType *WrapperType = Orig->getFunctionType();
     Function *Wrapper = Function::Create(
         WrapperType, GlobalValue::ExternalLinkage,
         Orig->getName() + "_wrapper", &M);
     Wrapper->setAttributes(Orig->getAttributes());
+    
+    // CRITICAL FIX: Remove adaptive attribute to prevent recursive processing
+    Wrapper->removeFnAttr("adaptive");
+    if (Wrapper->hasMetadata()) {
+        Wrapper->setMetadata("annotation", nullptr);
+    }
 
+    errs() << "[DEBUG] Creating entry basic block\n";
     BasicBlock *Entry = BasicBlock::Create(Ctx, "entry", Wrapper);
     IRBuilder<> Builder(Entry);
 
@@ -332,30 +371,36 @@ Function *SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metad
     LoadComplete->setAlignment(Align(4));
     Value *Complete = LoadComplete;
 
+    errs() << "[DEBUG] Creating 3-state basic blocks\n";
     // Create basic blocks for 3 states
     BasicBlock *ProfilingBB = BasicBlock::Create(Ctx, "profiling", Wrapper);
     BasicBlock *FinalizeBB = BasicBlock::Create(Ctx, "finalize", Wrapper);
     BasicBlock *OptimalBB = BasicBlock::Create(Ctx, "optimal", Wrapper);
 
+    errs() << "[DEBUG] Creating state switch\n";
     // Switch on profilingComplete value
     SwitchInst *Switch = Builder.CreateSwitch(Complete, ProfilingBB, 3);
     Switch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 0)), ProfilingBB);
     Switch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 1)), FinalizeBB);
     Switch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 2)), OptimalBB);
 
+    errs() << "[DEBUG] Building STATE 0: PROFILING\n";
     //--- STATE 0: PROFILING ---
     Builder.SetInsertPoint(ProfilingBB);
     {
+        errs() << "[DEBUG] Creating version load\n";
         // Load current version with ATOMIC ACQUIRE
         LoadInst *LoadVersion = Builder.CreateLoad(i32Ty, metadata.currentVersion);
         LoadVersion->setAtomic(AtomicOrdering::Acquire);
         LoadVersion->setAlignment(Align(4));
         Value *Version = LoadVersion;
 
+        errs() << "[DEBUG] Creating RDTSC intrinsic\n";
         // RDTSC before
         Function *RdtscFn = Intrinsic::getDeclaration(&M, Intrinsic::readcyclecounter);
         Value *StartCycles = Builder.CreateCall(RdtscFn, {});
 
+        errs() << "[DEBUG] Creating version dispatch blocks\n";
         // Create version dispatch blocks
         BasicBlock *V0BB = BasicBlock::Create(Ctx, "call_v0", Wrapper);
         BasicBlock *V1BB = BasicBlock::Create(Ctx, "call_v1", Wrapper);
@@ -363,6 +408,7 @@ Function *SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metad
         BasicBlock *V3BB = BasicBlock::Create(Ctx, "call_v3", Wrapper);
         BasicBlock *MeasureBB = BasicBlock::Create(Ctx, "measure", Wrapper);
 
+        errs() << "[DEBUG] Creating version switch\n";
         SwitchInst *VersionSwitch = Builder.CreateSwitch(Version, V0BB, 4);
         VersionSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 0)), V0BB);
         VersionSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 1)), V1BB);
@@ -376,6 +422,7 @@ Function *SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metad
             ResultPhi = Builder.CreatePHI(Orig->getReturnType(), 4, "result");
         }
 
+        errs() << "[DEBUG] Creating calls to 4 function versions\n";
         // Call each version
         for (int v = 0; v < 4; v++) {
             BasicBlock *VBB = (v == 0 ? V0BB : v == 1 ? V1BB : v == 2 ? V2BB : V3BB);
@@ -399,6 +446,7 @@ Function *SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metad
         Value *EndCycles = Builder.CreateCall(RdtscFn, {});
         Value *Elapsed = Builder.CreateSub(EndCycles, StartCycles);
 
+        errs() << "[DEBUG] Creating statistics update blocks\n";
         // Update statistics with ATOMIC ADD
         BasicBlock *UpdateBB[4], *NextBB[4];
         for (int v = 0; v < 4; v++) {
@@ -408,6 +456,7 @@ Function *SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metad
         
         BasicBlock *RotateBB = BasicBlock::Create(Ctx, "rotate", Wrapper);
         
+        errs() << "[DEBUG] Generating atomic statistics updates\n";
         for (int v = 0; v < 4; v++) {
             Value *IsThisVersion = Builder.CreateICmpEQ(Version, ConstantInt::get(i32Ty, v));
             Builder.CreateCondBr(IsThisVersion, UpdateBB[v], NextBB[v]);
@@ -455,6 +504,7 @@ Function *SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metad
         }
     }
 
+    errs() << "[DEBUG] Building STATE 1: FINALIZE\n";
     //--- STATE 1: FINALIZE WITH CAS ---
     Builder.SetInsertPoint(FinalizeBB);
     {
@@ -481,8 +531,10 @@ Function *SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metad
         Builder.CreateCondBr(Success, DoFinalizeBB, SkipFinalizeBB);
         
         // Only ONE thread enters DoFinalizeBB
+        errs() << "[DEBUG] Creating finalization logic with CAS\n";
         Builder.SetInsertPoint(DoFinalizeBB);
         {
+            errs() << "[DEBUG] Loading statistics for all versions\n";
             // Load all statistics
             Value *Cycles[4], *CyclesSq[4], *Runs[4];
             for (int v = 0; v < 4; v++) {
@@ -499,6 +551,7 @@ Function *SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metad
                 Runs[v] = LR;
             }
 
+            errs() << "[DEBUG] Calculating statistical metrics (mean, variance, CV)\n";
             // Calculate statistics
             Value *Mean[4], *CV[4];
             for (int v = 0; v < 4; v++) {
@@ -529,6 +582,7 @@ Function *SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metad
                 CV[v] = Builder.CreateSelect(HasRuns, CV[v], MaxVal);
             }
 
+            errs() << "[DEBUG] Selecting best version based on CV threshold\n";
             // Select best version (lowest mean with CV < 50%)
             Value *BestVersion = ConstantInt::get(i32Ty, 0);
             Value *BestMean = Mean[0];
@@ -617,6 +671,7 @@ Function *SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metad
         }
     }
 
+    errs() << "[DEBUG] Building STATE 2: OPTIMAL\n";
     //--- STATE 2: OPTIMAL ---
     Builder.SetInsertPoint(OptimalBB);
     {
@@ -791,6 +846,12 @@ Function *SimpleAdaptivePassImpl::createThinDispatcher(FunctionMetadata &metadat
         DispatcherType, Orig->getLinkage(),
         Orig->getName(), &M);
     Dispatcher->setAttributes(Orig->getAttributes());
+    
+    // CRITICAL FIX: Remove adaptive attribute to prevent recursive processing
+    Dispatcher->removeFnAttr("adaptive");
+    if (Dispatcher->hasMetadata()) {
+        Dispatcher->setMetadata("annotation", nullptr);
+    }
 
     BasicBlock *Entry = BasicBlock::Create(Ctx, "entry", Dispatcher);
     IRBuilder<> Builder(Entry);
@@ -842,7 +903,9 @@ void SimpleAdaptivePassImpl::processAdaptiveFunction(Function *F, Module &M) {
         // errs() << "[ADAPTIVE] Profiling mode: " << F->getName() << "\n";
         
         createWrapperStaticVars(metadata, M);
+        errs() << "[ADAPTIVE] Creating profiling wrapper for " << F->getName() << "\n";
         metadata.wrapper = createProfilingWrapper(metadata, M);
+        errs() << "[ADAPTIVE] Created profiling wrapper for " << F->getName() << "\n";
     }
 
     // Create dispatcher
