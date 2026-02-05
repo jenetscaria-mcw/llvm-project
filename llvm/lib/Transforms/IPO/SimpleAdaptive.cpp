@@ -259,8 +259,8 @@ void SimpleAdaptivePassImpl::createWrapperStaticVars(FunctionMetadata &metadata,
     LLVMContext &Ctx = M.getContext();
     const std::string baseName = metadata.original->getName().str();
 
-    Type *i32Ty = Type::getInt32Ty(Ctx);
-    Type *i64Ty = Type::getInt64Ty(Ctx);
+    IntegerType *i32Ty = Type::getInt32Ty(Ctx);
+    IntegerType *i64Ty = Type::getInt64Ty(Ctx);
 
     // Create 6 globals per function
     for (int v = 0; v < 4; v++) {
@@ -339,9 +339,9 @@ Function *SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metad
 
     // Switch on profilingComplete value
     SwitchInst *Switch = Builder.CreateSwitch(Complete, ProfilingBB, 3);
-    Switch->addCase(ConstantInt::get(i32Ty, 0), ProfilingBB);
-    Switch->addCase(ConstantInt::get(i32Ty, 1), FinalizeBB);
-    Switch->addCase(ConstantInt::get(i32Ty, 2), OptimalBB);
+    Switch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 0)), ProfilingBB);
+    Switch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 1)), FinalizeBB);
+    Switch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 2)), OptimalBB);
 
     //--- STATE 0: PROFILING ---
     Builder.SetInsertPoint(ProfilingBB);
@@ -364,10 +364,10 @@ Function *SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metad
         BasicBlock *MeasureBB = BasicBlock::Create(Ctx, "measure", Wrapper);
 
         SwitchInst *VersionSwitch = Builder.CreateSwitch(Version, V0BB, 4);
-        VersionSwitch->addCase(ConstantInt::get(i32Ty, 0), V0BB);
-        VersionSwitch->addCase(ConstantInt::get(i32Ty, 1), V1BB);
-        VersionSwitch->addCase(ConstantInt::get(i32Ty, 2), V2BB);
-        VersionSwitch->addCase(ConstantInt::get(i32Ty, 3), V3BB);
+        VersionSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 0)), V0BB);
+        VersionSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 1)), V1BB);
+        VersionSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 2)), V2BB);
+        VersionSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 3)), V3BB);
 
         // Create PHI for results if non-void
         PHINode *ResultPhi = nullptr;
@@ -581,10 +581,10 @@ Function *SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metad
         BasicBlock *ReturnBB = BasicBlock::Create(Ctx, "return_finalize", Wrapper);
         
         SwitchInst *BestSwitch = Builder.CreateSwitch(Best, BestV0BB, 4);
-        BestSwitch->addCase(ConstantInt::get(i32Ty, 0), BestV0BB);
-        BestSwitch->addCase(ConstantInt::get(i32Ty, 1), BestV1BB);
-        BestSwitch->addCase(ConstantInt::get(i32Ty, 2), BestV2BB);
-        BestSwitch->addCase(ConstantInt::get(i32Ty, 3), BestV3BB);
+        BestSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 0)), BestV0BB);
+        BestSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 1)), BestV1BB);
+        BestSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 2)), BestV2BB);
+        BestSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 3)), BestV3BB);
         
         PHINode *FinalResult = nullptr;
         if (!Orig->getReturnType()->isVoidTy()) {
@@ -634,10 +634,10 @@ Function *SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metad
         BasicBlock *OptReturnBB = BasicBlock::Create(Ctx, "return_optimal", Wrapper);
         
         SwitchInst *OptSwitch = Builder.CreateSwitch(Best, OptV0BB, 4);
-        OptSwitch->addCase(ConstantInt::get(i32Ty, 0), OptV0BB);
-        OptSwitch->addCase(ConstantInt::get(i32Ty, 1), OptV1BB);
-        OptSwitch->addCase(ConstantInt::get(i32Ty, 2), OptV2BB);
-        OptSwitch->addCase(ConstantInt::get(i32Ty, 3), OptV3BB);
+        OptSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 0)), OptV0BB);
+        OptSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 1)), OptV1BB);
+        OptSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 2)), OptV2BB);
+        OptSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 3)), OptV3BB);
         
         PHINode *OptResult = nullptr;
         if (!Orig->getReturnType()->isVoidTy()) {
@@ -742,10 +742,10 @@ Function *SimpleAdaptivePassImpl::createProductionWrapper(FunctionMetadata &meta
         BasicBlock *RetBB = BasicBlock::Create(Ctx, "return", Wrapper);
         
         SwitchInst *Switch = Builder.CreateSwitch(Best, V0BB, 4);
-        Switch->addCase(ConstantInt::get(i32Ty, 0), V0BB);
-        Switch->addCase(ConstantInt::get(i32Ty, 1), V1BB);
-        Switch->addCase(ConstantInt::get(i32Ty, 2), V2BB);
-        Switch->addCase(ConstantInt::get(i32Ty, 3), V3BB);
+        Switch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 0)), V0BB);
+        Switch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 1)), V1BB);
+        Switch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 2)), V2BB);
+        Switch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 3)), V3BB);
         
         PHINode *Result = nullptr;
         if (!Orig->getReturnType()->isVoidTy()) {
@@ -839,7 +839,7 @@ void SimpleAdaptivePassImpl::processAdaptiveFunction(Function *F, Module &M) {
         metadata.wrapper = createProductionWrapper(metadata, M);
     } else {
         // PROFILING MODE (default): Full profiling wrapper with CAS
-        errs() << "[ADAPTIVE] Profiling mode: " << F->getName() << "\n";
+        // errs() << "[ADAPTIVE] Profiling mode: " << F->getName() << "\n";
         
         createWrapperStaticVars(metadata, M);
         metadata.wrapper = createProfilingWrapper(metadata, M);
