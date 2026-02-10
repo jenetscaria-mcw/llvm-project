@@ -543,7 +543,9 @@ SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metadata,
       }
 
       // Calculate statistics
-      Value *Mean[4], *CV[4];
+      Value *Mean[4], *CV[4], *StdErr_arr[4];
+      Function *SqrtFn = Intrinsic::getDeclaration(&M, Intrinsic::sqrt,
+                                                   {Builder.getDoubleTy()});
       for (int v = 0; v < 4; v++) {
         Value *RunsF64 = Builder.CreateUIToFP(Runs[v], Builder.getDoubleTy());
         Value *CyclesF64 =
@@ -562,8 +564,6 @@ SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metadata,
         Value *MeanSquared = Builder.CreateFMul(Mean[v], Mean[v]);
         Value *Variance = Builder.CreateFSub(MeanOfSquares, MeanSquared);
 
-        Function *SqrtFn = Intrinsic::getDeclaration(&M, Intrinsic::sqrt,
-                                                     {Builder.getDoubleTy()});
         Value *StdDev = Builder.CreateCall(SqrtFn, {Variance});
         Value *SqrtN = Builder.CreateCall(SqrtFn, {RunsF64});
         Value *StdErr = Builder.CreateFDiv(StdDev, SqrtN);
@@ -571,28 +571,84 @@ SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metadata,
 
         Value *MaxVal = ConstantFP::get(Builder.getDoubleTy(),
                                         std::numeric_limits<double>::max());
+        Value *ZeroStdErr = ConstantFP::get(Builder.getDoubleTy(), 0.0);
         Mean[v] = Builder.CreateSelect(HasRuns, Mean[v], MaxVal);
         CV[v] = Builder.CreateSelect(HasRuns, CV[v], MaxVal);
+        StdErr_arr[v] = Builder.CreateSelect(HasRuns, StdErr, ZeroStdErr);
       }
 
-      // Select best version (lowest mean with CV < 50%)
+      // Select best version using Welch's t-test + 10% improvement threshold
       Value *BestVersion = ConstantInt::get(i32Ty, 0);
       Value *BestMean = Mean[0];
+      Value *BestCV = CV[0];
+      Value *BestStdErr = StdErr_arr[0];
       Value *CVThreshold = ConstantFP::get(Builder.getDoubleTy(), 0.50);
 
       for (int v = 1; v < 4; v++) {
         Value *CurrentReliable = Builder.CreateFCmpOLT(CV[v], CVThreshold);
-        Value *BestReliable = Builder.CreateFCmpOLT(CV[0], CVThreshold);
+        Value *BestReliable = Builder.CreateFCmpOLT(BestCV, CVThreshold);
         Value *IsFaster = Builder.CreateFCmpOLT(Mean[v], BestMean);
 
+        // MINIMUM IMPROVEMENT: Require >10% improvement to avoid noise
+        Value *ImprovementAbs = Builder.CreateFSub(BestMean, Mean[v]);
+        Value *ImprovementRatio = Builder.CreateFDiv(ImprovementAbs, BestMean);
+        Value *MinImprovement =
+            ConstantFP::get(Builder.getDoubleTy(), 0.10); // 10%
+        Value *SignificantImprovement =
+            Builder.CreateFCmpOGT(ImprovementRatio, MinImprovement);
+
+        // WELCH'S T-TEST: Statistical significance test
+        // t = (mean_best - mean_candidate) / sqrt(stderr_candidate^2 +
+        // stderr_best^2)
+        // For 95% confidence with large samples, |t| > 1.96 is significant
+        Value *StdErr1Sq =
+            Builder.CreateFMul(StdErr_arr[v], StdErr_arr[v]);
+        Value *StdErr2Sq = Builder.CreateFMul(BestStdErr, BestStdErr);
+        Value *PooledVar = Builder.CreateFAdd(StdErr1Sq, StdErr2Sq);
+        Value *PooledStdErr = Builder.CreateCall(SqrtFn, {PooledVar});
+
+        Value *MeanDiff = Builder.CreateFSub(BestMean, Mean[v]);
+        Value *HasValidStdErr = Builder.CreateFCmpOGT(
+            PooledStdErr, ConstantFP::get(Builder.getDoubleTy(), 0.0));
+        Value *TStatistic = Builder.CreateSelect(
+            HasValidStdErr, Builder.CreateFDiv(MeanDiff, PooledStdErr),
+            ConstantFP::get(Builder.getDoubleTy(), 0.0));
+
+        // |t| > 1.96 for 95% confidence
+        Value *TThreshold = ConstantFP::get(Builder.getDoubleTy(), 1.96);
+        Value *WelchSignificant = Builder.CreateAnd(
+            HasValidStdErr, Builder.CreateFCmpOGT(TStatistic, TThreshold));
+
+        // Decision logic:
+        // 1. Both reliable: pick faster AND (improvement > 10% OR Welch
+        // significant)
+        // 2. Only current reliable: pick current
+        // 3. Only best reliable: keep best
+        Value *BothReliable =
+            Builder.CreateAnd(CurrentReliable, BestReliable);
+        Value *OnlyCurrentReliable = Builder.CreateAnd(
+            CurrentReliable, Builder.CreateNot(BestReliable));
+
+        // Statistically significant: either 10% improvement OR Welch's
+        // t-test passes
+        Value *StatisticallySignificant =
+            Builder.CreateOr(SignificantImprovement, WelchSignificant);
+
+        // Switch if: (both reliable AND faster AND statistically
+        // significant) OR (only current reliable)
+        Value *BothReliableAndSignificant = Builder.CreateAnd(
+            Builder.CreateAnd(BothReliable, IsFaster),
+            StatisticallySignificant);
+
         Value *ShouldUpdate = Builder.CreateOr(
-            Builder.CreateAnd(CurrentReliable, Builder.CreateNot(BestReliable)),
-            Builder.CreateAnd(Builder.CreateAnd(CurrentReliable, BestReliable),
-                              IsFaster));
+            BothReliableAndSignificant, OnlyCurrentReliable);
 
         BestVersion = Builder.CreateSelect(
             ShouldUpdate, ConstantInt::get(i32Ty, v), BestVersion);
         BestMean = Builder.CreateSelect(ShouldUpdate, Mean[v], BestMean);
+        BestCV = Builder.CreateSelect(ShouldUpdate, CV[v], BestCV);
+        BestStdErr =
+            Builder.CreateSelect(ShouldUpdate, StdErr_arr[v], BestStdErr);
       }
 
       // Store best version with ATOMIC
