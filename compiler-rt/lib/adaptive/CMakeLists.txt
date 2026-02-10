@@ -1,9 +1,20 @@
 set(ADAPTIVE_SOURCES adaptive_runtime.cpp)
 
-set(ADAPTIVE_CFLAGS ${SANITIZER_COMMON_CFLAGS})
-append_list_if(COMPILER_RT_HAS_FPIC -fPIC ADAPTIVE_CFLAGS)
+# Define supported architectures for adaptive runtime
+# Start with most common architecture, can be expanded later
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+  set(ADAPTIVE_SUPPORTED_ARCH x86_64)
+else()
+  set(ADAPTIVE_SUPPORTED_ARCH i386)
+endif()
 
-set(ADAPTIVE_LINK_LIBS ${SANITIZER_COMMON_LINK_LIBS})
+# Use minimal flags for C++ compilation (adaptive_runtime.cpp needs C++ stdlib)
+set(ADAPTIVE_CFLAGS)
+append_list_if(COMPILER_RT_HAS_FPIC -fPIC ADAPTIVE_CFLAGS)
+append_list_if(COMPILER_RT_HAS_FNO_RTTI -fno-rtti ADAPTIVE_CFLAGS)
+append_list_if(COMPILER_RT_HAS_FNO_EXCEPTIONS -fno-exceptions ADAPTIVE_CFLAGS)
+
+set(ADAPTIVE_LINK_LIBS)
 append_list_if(COMPILER_RT_HAS_LIBPTHREAD pthread ADAPTIVE_LINK_LIBS)
 
 # Build static library

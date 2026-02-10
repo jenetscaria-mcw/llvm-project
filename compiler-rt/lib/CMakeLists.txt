@@ -42,15 +42,14 @@ if(COMPILER_RT_BUILD_SANITIZERS)
     add_subdirectory(lsan)
     # Contains RTUbsan used even without COMPILER_RT_HAS_UBSAN.
     add_subdirectory(ubsan)
-    # contains adaptive runtime library
-    add_subdirectory(adaptive)
   endif()
 
   foreach(sanitizer ${COMPILER_RT_SANITIZERS_TO_BUILD})
     compiler_rt_build_runtime(${sanitizer})
   endforeach()
 endif()
-
+# contains adaptive runtime library
+add_subdirectory(adaptive)
 if(COMPILER_RT_BUILD_PROFILE)
   compiler_rt_build_runtime(profile)
 endif()
