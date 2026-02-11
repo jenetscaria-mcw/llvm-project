@@ -139,7 +139,7 @@ private:
                                    Module &M); // Profiling wrapper
   Function *createProductionWrapper(FunctionMetadata &metadata,
                                     Module &M); // Production wrapper
-  Function *createThinDispatcher(FunctionMetadata &metadata, Module &M);
+  Function *createThinDispatcher(FunctionMetadata &metadata, Module &M, std::string targetName);
   void processAdaptiveFunction(Function *F, Module &M);
   void createInitializationFunction(Module &M);
 
@@ -909,13 +909,13 @@ SimpleAdaptivePassImpl::createProductionWrapper(FunctionMetadata &metadata,
 // Create Thin Dispatcher
 Function *
 SimpleAdaptivePassImpl::createThinDispatcher(FunctionMetadata &metadata,
-                                             Module &M) {
+                                             Module &M, std::string targetName) {
   LLVMContext &Ctx = M.getContext();
   Function *Orig = metadata.original;
 
   FunctionType *DispatcherType = Orig->getFunctionType();
   Function *Dispatcher =
-      Function::Create(DispatcherType, Orig->getLinkage(), Orig->getName(), &M);
+      Function::Create(DispatcherType, Orig->getLinkage(), targetName, &M);
   Dispatcher->setAttributes(Orig->getAttributes());
 
   // CRITICAL FIX: Remove adaptive attribute to prevent recursive processing
@@ -948,6 +948,10 @@ SimpleAdaptivePassImpl::createThinDispatcher(FunctionMetadata &metadata,
 void SimpleAdaptivePassImpl::processAdaptiveFunction(Function *F, Module &M) {
   FunctionMetadata metadata;
   metadata.original = F;
+  std::string originalName = F->getName().str();
+
+  // RENAME ORIGINAL FIRST to avoid collision with dispatcher
+  F->setName(originalName + "_orig");
 
   // Always create 4 optimized versions
   for (int i = 0; i < 4; i++) {
@@ -962,7 +966,7 @@ void SimpleAdaptivePassImpl::processAdaptiveFunction(Function *F, Module &M) {
         M, Type::getInt32Ty(M.getContext()), false,
         GlobalValue::InternalLinkage,
         ConstantInt::get(Type::getInt32Ty(M.getContext()), 0),
-        "__adaptive_best_" + F->getName().str());
+        "__adaptive_best_" + originalName);
     metadata.bestVersion->setAlignment(Align(4));
 
     metadata.wrapper = createProductionWrapper(metadata, M);
@@ -971,8 +975,8 @@ void SimpleAdaptivePassImpl::processAdaptiveFunction(Function *F, Module &M) {
     metadata.wrapper = createProfilingWrapper(metadata, M);
   }
 
-  // Create dispatcher
-  metadata.dispatcher = createThinDispatcher(metadata, M);
+  // Create dispatcher with the ORIGINAL NAME
+  metadata.dispatcher = createThinDispatcher(metadata, M, originalName);
 
   // Replace original
   F->replaceAllUsesWith(metadata.dispatcher);
