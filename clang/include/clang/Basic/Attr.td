@@ -4724,8 +4724,5 @@ def Adaptive : InheritableAttr {
   let Spellings = [GNU<"adaptive">];
   let Subjects = SubjectList<[Function, CXXMethod, ObjCMethod, ParmVar, Var], ErrorDiag>;
 
-  // NEW: one integer argument, e.g. __attribute__((adaptive(12685794)))
-  let Args = [IntArgument<"Count">];
-
   let Documentation = [Undocumented];
 }
