@@ -14,7 +14,7 @@
 #include <map>
 #include <vector>
 
-#define ADAPTIVE_DEBUG_PRINTS 1
+#define ADAPTIVE_DEBUG_PRINTS 0
 
 using namespace llvm;
 

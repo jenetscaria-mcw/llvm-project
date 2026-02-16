@@ -196,10 +196,10 @@ extern "C" int __adaptive_read_profile(const char *func_name) {
     }
     fclose(file);
 
-    if (best_version >= 0) {
-      fprintf(stderr, "[LOAD] %s -> V%d (from profile)\n", func_name,
-              best_version);
-    }
+    // if (best_version >= 0) {
+    //   fprintf(stderr, "[LOAD] %s -> V%d (from profile)\n", func_name,
+    //           best_version);
+    // } 
   }
 
   pthread_mutex_unlock(&profile_mutex);
