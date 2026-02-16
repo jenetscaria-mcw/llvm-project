@@ -139,7 +139,8 @@ private:
                                    Module &M); // Profiling wrapper
   Function *createProductionWrapper(FunctionMetadata &metadata,
                                     Module &M); // Production wrapper
-  Function *createThinDispatcher(FunctionMetadata &metadata, Module &M, std::string targetName);
+  Function *createThinDispatcher(FunctionMetadata &metadata, Module &M,
+                                 std::string targetName);
   void processAdaptiveFunction(Function *F, Module &M);
   void createInitializationFunction(Module &M);
 
@@ -271,14 +272,24 @@ Function *SimpleAdaptivePassImpl::createVersion(Function *Orig,
     if (fc.canBenefitFromInlining) {
       Clone->addFnAttr(Attribute::AlwaysInline);
       Clone->addFnAttr("inline-threshold", "100000");
+      errs() << "[ADAPTIVE] " << Orig->getName()
+             << "_v3: canBenefitFromInlining - Applied AlwaysInline + "
+                "inline-threshold=100000\n";
     } else if (fc.canBenefitFromFastMath) {
       Clone->addFnAttr("unsafe-fp-math", "true");
       Clone->addFnAttr("no-nans-fp-math", "true");
       Clone->addFnAttr("no-infs-fp-math", "true");
+      errs() << "[ADAPTIVE] " << Orig->getName()
+             << "_v3: canBenefitFromFastMath - Applied unsafe-fp-math, "
+                "no-nans-fp-math, no-infs-fp-math\n";
     } else if (fc.manyBranches) {
       Clone->addFnAttr(Attribute::OptimizeForSize);
+      errs() << "[ADAPTIVE] " << Orig->getName()
+             << "_v3: manyBranches - Applied OptimizeForSize\n";
     } else {
       Clone->addFnAttr("unroll-count", "6");
+      errs() << "[ADAPTIVE] " << Orig->getName()
+             << "_v3: default - Applied unroll-count=6\n";
     }
     break;
   }
@@ -601,8 +612,7 @@ SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metadata,
         // t = (mean_best - mean_candidate) / sqrt(stderr_candidate^2 +
         // stderr_best^2)
         // For 95% confidence with large samples, |t| > 1.96 is significant
-        Value *StdErr1Sq =
-            Builder.CreateFMul(StdErr_arr[v], StdErr_arr[v]);
+        Value *StdErr1Sq = Builder.CreateFMul(StdErr_arr[v], StdErr_arr[v]);
         Value *StdErr2Sq = Builder.CreateFMul(BestStdErr, BestStdErr);
         Value *PooledVar = Builder.CreateFAdd(StdErr1Sq, StdErr2Sq);
         Value *PooledStdErr = Builder.CreateCall(SqrtFn, {PooledVar});
@@ -624,10 +634,9 @@ SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metadata,
         // significant)
         // 2. Only current reliable: pick current
         // 3. Only best reliable: keep best
-        Value *BothReliable =
-            Builder.CreateAnd(CurrentReliable, BestReliable);
-        Value *OnlyCurrentReliable = Builder.CreateAnd(
-            CurrentReliable, Builder.CreateNot(BestReliable));
+        Value *BothReliable = Builder.CreateAnd(CurrentReliable, BestReliable);
+        Value *OnlyCurrentReliable =
+            Builder.CreateAnd(CurrentReliable, Builder.CreateNot(BestReliable));
 
         // Statistically significant: either 10% improvement OR Welch's
         // t-test passes
@@ -636,12 +645,12 @@ SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metadata,
 
         // Switch if: (both reliable AND faster AND statistically
         // significant) OR (only current reliable)
-        Value *BothReliableAndSignificant = Builder.CreateAnd(
-            Builder.CreateAnd(BothReliable, IsFaster),
-            StatisticallySignificant);
+        Value *BothReliableAndSignificant =
+            Builder.CreateAnd(Builder.CreateAnd(BothReliable, IsFaster),
+                              StatisticallySignificant);
 
-        Value *ShouldUpdate = Builder.CreateOr(
-            BothReliableAndSignificant, OnlyCurrentReliable);
+        Value *ShouldUpdate =
+            Builder.CreateOr(BothReliableAndSignificant, OnlyCurrentReliable);
 
         BestVersion = Builder.CreateSelect(
             ShouldUpdate, ConstantInt::get(i32Ty, v), BestVersion);
@@ -787,7 +796,7 @@ SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metadata,
   return Wrapper;
 }
 
-// Create Production Wrapper (Direct Call)
+// Create Production Wrapper (Zero-Overhead Direct Call via Function Pointer)
 Function *
 SimpleAdaptivePassImpl::createProductionWrapper(FunctionMetadata &metadata,
                                                 Module &M) {
@@ -808,30 +817,38 @@ SimpleAdaptivePassImpl::createProductionWrapper(FunctionMetadata &metadata,
 
   BasicBlock *Entry = BasicBlock::Create(Ctx, "entry", Wrapper);
   BasicBlock *InitBB = BasicBlock::Create(Ctx, "init", Wrapper);
-  BasicBlock *ReadyBB = BasicBlock::Create(Ctx, "ready", Wrapper);
+  BasicBlock *CallBB = BasicBlock::Create(Ctx, "call", Wrapper);
   IRBuilder<> Builder(Entry);
 
   Type *i32Ty = Type::getInt32Ty(Ctx);
+  Type *i8PtrTy = PointerType::get(Type::getInt8Ty(Ctx), 0);
+  PointerType *FuncPtrTy = PointerType::get(WrapperType, 0);
 
   std::vector<Value *> Args;
   for (auto &Arg : Wrapper->args())
     Args.push_back(&Arg);
 
-  // Check if we've loaded best version (one-time initialization)
-  LoadInst *LoadBest = Builder.CreateLoad(i32Ty, metadata.bestVersion);
-  LoadBest->setAtomic(AtomicOrdering::Acquire);
-  Value *BestIsZero =
-      Builder.CreateICmpEQ(LoadBest, ConstantInt::get(i32Ty, 0));
+  // Create a global variable to store the function pointer (initialized to
+  // null) This replaces the bestVersion integer with a direct function pointer
+  GlobalVariable *BestFuncPtr =
+      new GlobalVariable(M, FuncPtrTy, false, GlobalValue::InternalLinkage,
+                         ConstantPointerNull::get(FuncPtrTy),
+                         "__adaptive_best_func_" + Orig->getName().str());
+  BestFuncPtr->setAlignment(Align(8));
 
-  Builder.CreateCondBr(BestIsZero, InitBB, ReadyBB);
+  // Check if function pointer is null (one-time initialization check)
+  LoadInst *LoadPtr = Builder.CreateLoad(FuncPtrTy, BestFuncPtr);
+  Value *IsNull =
+      Builder.CreateICmpEQ(LoadPtr, ConstantPointerNull::get(FuncPtrTy));
 
-  // Initialize: Read profile file once
+  Builder.CreateCondBr(IsNull, InitBB, CallBB);
+
+  // Initialize: Read profile file once and store function pointer
   Builder.SetInsertPoint(InitBB);
   {
     Value *FuncName = Builder.CreateGlobalStringPtr(Orig->getName());
 
     // Call __adaptive_read_profile
-    Type *i8PtrTy = PointerType::get(Type::getInt8Ty(Ctx), 0);
     FunctionType *ReadProfileType = FunctionType::get(i32Ty, {i8PtrTy}, false);
     FunctionCallee ReadProfile =
         M.getOrInsertFunction("__adaptive_read_profile", ReadProfileType);
@@ -844,62 +861,68 @@ SimpleAdaptivePassImpl::createProductionWrapper(FunctionMetadata &metadata,
     Value *ActualBest = Builder.CreateSelect(
         NotFound, ConstantInt::get(i32Ty, 0), ProfiledBest);
 
-    // Store it
-    StoreInst *StoreBest =
-        Builder.CreateStore(ActualBest, metadata.bestVersion);
-    StoreBest->setAtomic(AtomicOrdering::Release);
+#if ADAPTIVE_DEBUG_PRINTS
+    // Debug output to confirm which version is selected
+    FunctionType *PrintfType = FunctionType::get(i32Ty, {i8PtrTy}, true);
+    FunctionCallee Printf = M.getOrInsertFunction("printf", PrintfType);
 
-    Builder.CreateBr(ReadyBB);
+    Value *DebugMsg = Builder.CreateGlobalStringPtr(
+        "[ADAPTIVE PRODUCTION] %s using version %d\n");
+    Builder.CreateCall(Printf, {DebugMsg, FuncName, ActualBest});
+#endif
+
+    // Create switch to select the correct function pointer based on best
+    // version
+    BasicBlock *SetV0 = BasicBlock::Create(Ctx, "set_v0", Wrapper);
+    BasicBlock *SetV1 = BasicBlock::Create(Ctx, "set_v1", Wrapper);
+    BasicBlock *SetV2 = BasicBlock::Create(Ctx, "set_v2", Wrapper);
+    BasicBlock *SetV3 = BasicBlock::Create(Ctx, "set_v3", Wrapper);
+    BasicBlock *StorePtr = BasicBlock::Create(Ctx, "store_ptr", Wrapper);
+
+    SwitchInst *InitSwitch = Builder.CreateSwitch(ActualBest, SetV0, 4);
+    InitSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 0)), SetV0);
+    InitSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 1)), SetV1);
+    InitSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 2)), SetV2);
+    InitSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 3)), SetV3);
+
+    // Create PHI node to collect the selected function pointer
+    Builder.SetInsertPoint(StorePtr);
+    PHINode *SelectedFunc = Builder.CreatePHI(FuncPtrTy, 4, "selected_func");
+
+    // Set each version's function pointer
+    for (int v = 0; v < 4; v++) {
+      BasicBlock *SetBB = (v == 0   ? SetV0
+                           : v == 1 ? SetV1
+                           : v == 2 ? SetV2
+                                    : SetV3);
+      Builder.SetInsertPoint(SetBB);
+      SelectedFunc->addIncoming(metadata.versions[v], SetBB);
+      Builder.CreateBr(StorePtr);
+    }
+
+    // Store the selected function pointer (one-time write)
+    Builder.SetInsertPoint(StorePtr);
+    Builder.CreateStore(SelectedFunc, BestFuncPtr);
+
+    // Also store to bestVersion for compatibility with profiling output
+    Builder.CreateStore(ActualBest, metadata.bestVersion);
+
+    Builder.CreateBr(CallBB);
   }
 
-  // Ready: Call best version
-  Builder.SetInsertPoint(ReadyBB);
+  // Call: Direct call through function pointer (ZERO OVERHEAD after init)
+  Builder.SetInsertPoint(CallBB);
   {
-    LoadInst *LoadBest2 = Builder.CreateLoad(i32Ty, metadata.bestVersion);
-    LoadBest2->setAtomic(AtomicOrdering::Acquire);
-    Value *Best = LoadBest2;
+    // Load function pointer - this is the ONLY operation on the hot path
+    LoadInst *FuncPtr = Builder.CreateLoad(FuncPtrTy, BestFuncPtr);
 
-    // ZERO OVERHEAD: Direct call to best version
-    BasicBlock *V0BB = BasicBlock::Create(Ctx, "prod_v0", Wrapper);
-    BasicBlock *V1BB = BasicBlock::Create(Ctx, "prod_v1", Wrapper);
-    BasicBlock *V2BB = BasicBlock::Create(Ctx, "prod_v2", Wrapper);
-    BasicBlock *V3BB = BasicBlock::Create(Ctx, "prod_v3", Wrapper);
-    BasicBlock *RetBB = BasicBlock::Create(Ctx, "return", Wrapper);
-
-    SwitchInst *Switch = Builder.CreateSwitch(Best, V0BB, 4);
-    Switch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 0)), V0BB);
-    Switch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 1)), V1BB);
-    Switch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 2)), V2BB);
-    Switch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 3)), V3BB);
-
-    PHINode *Result = nullptr;
-    if (!Orig->getReturnType()->isVoidTy()) {
-      Builder.SetInsertPoint(RetBB);
-      Result = Builder.CreatePHI(Orig->getReturnType(), 4, "prod_result");
-    }
-
-    for (int v = 0; v < 4; v++) {
-      BasicBlock *BB = (v == 0 ? V0BB : v == 1 ? V1BB : v == 2 ? V2BB : V3BB);
-      Builder.SetInsertPoint(BB);
-
-      if (Orig->getReturnType()->isVoidTy()) {
-        Builder.CreateCall(metadata.versions[v]->getFunctionType(),
-                           metadata.versions[v], Args);
-        Builder.CreateBr(RetBB);
-      } else {
-        Value *VResult =
-            Builder.CreateCall(metadata.versions[v]->getFunctionType(),
-                               metadata.versions[v], Args);
-        Result->addIncoming(VResult, BB);
-        Builder.CreateBr(RetBB);
-      }
-    }
-
-    Builder.SetInsertPoint(RetBB);
-    if (Result) {
-      Builder.CreateRet(Result);
-    } else {
+    // Direct call through function pointer - no atomics, no branches, no switch
+    if (Orig->getReturnType()->isVoidTy()) {
+      Builder.CreateCall(WrapperType, FuncPtr, Args);
       Builder.CreateRetVoid();
+    } else {
+      Value *Result = Builder.CreateCall(WrapperType, FuncPtr, Args);
+      Builder.CreateRet(Result);
     }
   }
 
@@ -907,9 +930,8 @@ SimpleAdaptivePassImpl::createProductionWrapper(FunctionMetadata &metadata,
 }
 
 // Create Thin Dispatcher
-Function *
-SimpleAdaptivePassImpl::createThinDispatcher(FunctionMetadata &metadata,
-                                             Module &M, std::string targetName) {
+Function *SimpleAdaptivePassImpl::createThinDispatcher(
+    FunctionMetadata &metadata, Module &M, std::string targetName) {
   LLVMContext &Ctx = M.getContext();
   Function *Orig = metadata.original;
 
