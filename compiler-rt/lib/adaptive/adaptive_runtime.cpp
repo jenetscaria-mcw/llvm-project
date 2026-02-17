@@ -32,6 +32,77 @@ static const char *get_profile_path() {
 extern "C" void __adaptive_write_profile(const char *func_name,
                                          int best_version);
 
+static int select_best_version(const long long cycles[4],
+                               const long long cycles_sq[4],
+                               const int runs[4]) {
+  double mean[4];
+  double cv[4];
+  double stderr_arr[4];
+
+  constexpr double MaxVal = 1e308;
+  constexpr double CVThreshold = 0.50;
+  constexpr double MinImprovement = 0.10;
+  constexpr double TThreshold = 1.96;
+
+  for (int v = 0; v < 4; v++) {
+    if (runs[v] <= 0) {
+      mean[v] = MaxVal;
+      cv[v] = MaxVal;
+      stderr_arr[v] = 0.0;
+      continue;
+    }
+
+    const double runs_f64 = (double)runs[v];
+    const double mean_of_cycles = (double)cycles[v] / runs_f64;
+    const double mean_of_sq = (double)cycles_sq[v] / runs_f64;
+    const double variance = mean_of_sq - (mean_of_cycles * mean_of_cycles);
+    const double std_dev = sqrt(variance > 0.0 ? variance : 0.0);
+    const double std_err = std_dev / sqrt(runs_f64);
+    const double safe_mean = mean_of_cycles > 0.0 ? mean_of_cycles : 1.0;
+
+    mean[v] = mean_of_cycles;
+    stderr_arr[v] = std_err;
+    cv[v] = std_err / safe_mean;
+  }
+
+  int best_version = 0;
+  double best_mean = mean[0];
+  double best_cv = cv[0];
+  double best_stderr = stderr_arr[0];
+
+  for (int v = 1; v < 4; v++) {
+    const bool current_reliable = cv[v] < CVThreshold;
+    const bool best_reliable = best_cv < CVThreshold;
+    const bool is_faster = mean[v] < best_mean;
+    const double improvement_ratio =
+        best_mean > 0.0 ? (best_mean - mean[v]) / best_mean : 0.0;
+    const bool significant_improvement = improvement_ratio > MinImprovement;
+
+    const double pooled_stderr =
+        sqrt(stderr_arr[v] * stderr_arr[v] + best_stderr * best_stderr);
+    const bool has_valid_stderr = pooled_stderr > 0.0;
+    const double t_statistic =
+        has_valid_stderr ? (best_mean - mean[v]) / pooled_stderr : 0.0;
+    const bool welch_significant = has_valid_stderr && t_statistic > TThreshold;
+
+    const bool statistically_significant =
+        significant_improvement || welch_significant;
+    const bool both_reliable_and_significant =
+        current_reliable && best_reliable && is_faster &&
+        statistically_significant;
+    const bool only_current_reliable = current_reliable && !best_reliable;
+
+    if (both_reliable_and_significant || only_current_reliable) {
+      best_version = v;
+      best_mean = mean[v];
+      best_cv = cv[v];
+      best_stderr = stderr_arr[v];
+    }
+  }
+
+  return best_version;
+}
+
 // Profiling Initialization and Finalization
 // Called at program exit via atexit()
 static void finalize_profiling() {
@@ -66,26 +137,7 @@ static void finalize_profiling() {
       runs[v] = __atomic_load_n(entry.run_count[v], __ATOMIC_ACQUIRE);
     }
 
-    // Calculate best version (lowest mean with CV < 50%)
-    int best_version = 0;
-    double best_mean = 1e308; // max double
-    const double cv_threshold = 0.50;
-
-    for (int v = 0; v < 4; v++) {
-      if (runs[v] > 0) {
-        double mean = (double)cycles[v] / runs[v];
-        double mean_of_sq = (double)cycles_sq[v] / runs[v];
-        double variance = mean_of_sq - (mean * mean);
-        double std_dev = sqrt(variance > 0 ? variance : 0);
-        double std_err = std_dev / sqrt((double)runs[v]);
-        double cv = std_err / mean;
-
-        if (cv < cv_threshold && mean < best_mean) {
-          best_mean = mean;
-          best_version = v;
-        }
-      }
-    }
+    int best_version = select_best_version(cycles, cycles_sq, runs);
 
     // Store best version
     __atomic_store_n(entry.best_version, best_version, __ATOMIC_RELEASE);
@@ -181,18 +233,18 @@ extern "C" int __adaptive_read_profile(const char *func_name) {
   int best_version = -1; // -1 = not found
 
   if (file) {
-    char line[256];
+    char line[4096];
     while (fgets(line, sizeof(line), file)) {
-      char name[200];
-      int version;
-
-      // Parse line format: "function_name:version"
-      if (sscanf(line, "%199[^:]:%d", name, &version) == 2) {
-        if (strcmp(name, func_name) == 0) {
-          best_version = version;
-          break; // Found it
-        }
-      }
+      line[strcspn(line, "\r\n")] = '\0';
+      char *sep = strrchr(line, ':');
+      if (!sep)
+        continue;
+      *sep = '\0';
+      int version = atoi(sep + 1);
+      if (version < 0 || version > 3)
+        continue;
+      if (strcmp(line, func_name) == 0)
+        best_version = version;
     }
     fclose(file);
 

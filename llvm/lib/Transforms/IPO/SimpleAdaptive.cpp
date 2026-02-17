@@ -11,7 +11,9 @@
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <algorithm>
 #include <cstdlib>
+#include <fstream>
 #include <map>
+#include <string>
 #include <vector>
 
 #define ADAPTIVE_DEBUG_PRINTS 0
@@ -25,6 +27,7 @@ struct FunctionMetadata {
   Function *versions[4]; // V0, V1, V2, V3
   Function *wrapper;
   Function *dispatcher;
+  std::string profileKey;
 
   //  6 Global total
   GlobalVariable *cpuCycles[4];
@@ -73,6 +76,40 @@ static bool isProductionMode() {
 static std::string getProfileFilePath() {
   const char *path = std::getenv("ADAPTIVE_PROFILE_PATH");
   return path ? std::string(path) : "/tmp/adaptive_profiles.txt";
+}
+
+static int readBestVersionFromProfile(const std::string &Key) {
+  std::ifstream profile(getProfileFilePath());
+  if (!profile.is_open())
+    return -1;
+
+  int BestVersion = -1;
+  std::string line;
+  while (std::getline(profile, line)) {
+    size_t sep = line.rfind(':');
+    if (sep == std::string::npos)
+      continue;
+
+    if (line.substr(0, sep) != Key)
+      continue;
+
+    const std::string versionStr = line.substr(sep + 1);
+    char *end = nullptr;
+    long parsed = std::strtol(versionStr.c_str(), &end, 10);
+    if (end == versionStr.c_str() || *end != '\0')
+      continue;
+    if (parsed < 0 || parsed > 3)
+      continue;
+
+    // Keep the latest valid entry for this key.
+    BestVersion = static_cast<int>(parsed);
+  }
+
+  return BestVersion;
+}
+
+static std::string buildProfileKey(const Module &M, StringRef FuncName) {
+  return (M.getModuleIdentifier() + "::" + FuncName.str());
 }
 
 // Analyze function characteristics
@@ -236,6 +273,20 @@ Function *SimpleAdaptivePassImpl::createVersion(Function *Orig,
     }
   }
 
+  // Keep recursive calls inside each clone direct, so adaptive wrappers are not
+  // re-entered from hot recursive paths.
+  for (BasicBlock &BB : *Clone) {
+    for (Instruction &I : BB) {
+      auto *CB = dyn_cast<CallBase>(&I);
+      if (!CB)
+        continue;
+      Value *Callee = CB->getCalledOperand()->stripPointerCasts();
+      if (Callee == Orig) {
+        CB->setCalledFunction(Clone);
+      }
+    }
+  }
+
   FunctionCharacteristics fc = analyzeFunctionCharacteristics(Orig);
 
   // Apply version-specific optimizations
@@ -372,7 +423,7 @@ SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metadata,
   for (auto &Arg : Wrapper->args())
     Args.push_back(&Arg);
 
-  Value *FuncName = Builder.CreateGlobalStringPtr(Orig->getName());
+  Value *FuncName = Builder.CreateGlobalStringPtr(metadata.profileKey);
 
   // Load profilingComplete with ATOMIC ACQUIRE
   LoadInst *LoadComplete =
@@ -573,16 +624,23 @@ SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metadata,
 
         Value *MeanOfSquares = Builder.CreateFDiv(CyclesSqF64, SafeRuns);
         Value *MeanSquared = Builder.CreateFMul(Mean[v], Mean[v]);
+        Value *ZeroF64 = ConstantFP::get(Builder.getDoubleTy(), 0.0);
         Value *Variance = Builder.CreateFSub(MeanOfSquares, MeanSquared);
+        Value *SafeVariance =
+            Builder.CreateSelect(Builder.CreateFCmpOGT(Variance, ZeroF64),
+                                 Variance, ZeroF64);
 
-        Value *StdDev = Builder.CreateCall(SqrtFn, {Variance});
-        Value *SqrtN = Builder.CreateCall(SqrtFn, {RunsF64});
+        Value *StdDev = Builder.CreateCall(SqrtFn, {SafeVariance});
+        Value *SqrtN = Builder.CreateCall(SqrtFn, {SafeRuns});
         Value *StdErr = Builder.CreateFDiv(StdDev, SqrtN);
-        CV[v] = Builder.CreateFDiv(StdErr, Mean[v]);
+        Value *SafeMean = Builder.CreateSelect(
+            Builder.CreateFCmpOGT(Mean[v], ZeroF64), Mean[v],
+            ConstantFP::get(Builder.getDoubleTy(), 1.0));
+        CV[v] = Builder.CreateFDiv(StdErr, SafeMean);
 
         Value *MaxVal = ConstantFP::get(Builder.getDoubleTy(),
                                         std::numeric_limits<double>::max());
-        Value *ZeroStdErr = ConstantFP::get(Builder.getDoubleTy(), 0.0);
+        Value *ZeroStdErr = ZeroF64;
         Mean[v] = Builder.CreateSelect(HasRuns, Mean[v], MaxVal);
         CV[v] = Builder.CreateSelect(HasRuns, CV[v], MaxVal);
         StdErr_arr[v] = Builder.CreateSelect(HasRuns, StdErr, ZeroStdErr);
@@ -846,7 +904,7 @@ SimpleAdaptivePassImpl::createProductionWrapper(FunctionMetadata &metadata,
   // Initialize: Read profile file once and store function pointer
   Builder.SetInsertPoint(InitBB);
   {
-    Value *FuncName = Builder.CreateGlobalStringPtr(Orig->getName());
+    Value *FuncName = Builder.CreateGlobalStringPtr(metadata.profileKey);
 
     // Call __adaptive_read_profile
     FunctionType *ReadProfileType = FunctionType::get(i32Ty, {i8PtrTy}, false);
@@ -971,37 +1029,84 @@ void SimpleAdaptivePassImpl::processAdaptiveFunction(Function *F, Module &M) {
   FunctionMetadata metadata;
   metadata.original = F;
   std::string originalName = F->getName().str();
+  auto originalLinkage = F->getLinkage();
+  auto originalVisibility = F->getVisibility();
+  auto originalUnnamedAddr = F->getUnnamedAddr();
+  bool originalDSOLocal = F->isDSOLocal();
+  Comdat *originalComdat = F->hasComdat() ? F->getComdat() : nullptr;
 
   // RENAME ORIGINAL FIRST to avoid collision with dispatcher
   F->setName(originalName + "_orig");
+  metadata.profileKey = buildProfileKey(M, F->getName());
 
   // Always create 4 optimized versions
   for (int i = 0; i < 4; i++) {
     metadata.versions[i] = createVersion(F, i, M);
   }
 
-  // MODE-SPECIFIC WRAPPER GENERATION
   if (isProductionMode()) {
-    // PRODUCTION MODE: Simple wrapper with one-time profile read
-    // Still need globals for bestVersion storage
-    metadata.bestVersion = new GlobalVariable(
-        M, Type::getInt32Ty(M.getContext()), false,
-        GlobalValue::InternalLinkage,
-        ConstantInt::get(Type::getInt32Ty(M.getContext()), 0),
-        "__adaptive_best_" + originalName);
-    metadata.bestVersion->setAlignment(Align(4));
+    int selectedVersion = readBestVersionFromProfile(metadata.profileKey);
+    if (selectedVersion < 0 || selectedVersion > 3)
+      selectedVersion = 0;
 
-    metadata.wrapper = createProductionWrapper(metadata, M);
-  } else {
-    createWrapperStaticVars(metadata, M);
-    metadata.wrapper = createProfilingWrapper(metadata, M);
+    Function *Selected = metadata.versions[selectedVersion];
+    Selected->setName(originalName);
+    Selected->setLinkage(originalLinkage);
+    Selected->setVisibility(originalVisibility);
+    Selected->setUnnamedAddr(originalUnnamedAddr);
+    Selected->setDSOLocal(originalDSOLocal);
+    if (originalComdat)
+      Selected->setComdat(originalComdat);
+
+    SmallVector<Use *, 32> UsesToRewrite;
+    for (Use &U : F->uses())
+      UsesToRewrite.push_back(&U);
+    for (Use *U : UsesToRewrite)
+      U->set(Selected);
+
+    // Keep the old original internal and dead; normal DCE can clean it up.
+    F->setLinkage(GlobalValue::InternalLinkage);
+    return;
   }
+
+  // MODE-SPECIFIC WRAPPER GENERATION
+  createWrapperStaticVars(metadata, M);
+  metadata.wrapper = createProfilingWrapper(metadata, M);
 
   // Create dispatcher with the ORIGINAL NAME
   metadata.dispatcher = createThinDispatcher(metadata, M, originalName);
 
-  // Replace original
-  F->replaceAllUsesWith(metadata.dispatcher);
+  // Replace original uses in non-adaptive code paths only. Keeping adaptive
+  // internals direct avoids recursive dispatch overhead.
+  SmallVector<Use *, 32> UsesToRewrite;
+  for (Use &U : F->uses()) {
+    auto *I = dyn_cast<Instruction>(U.getUser());
+    if (!I) {
+      UsesToRewrite.push_back(&U);
+      continue;
+    }
+
+    Function *Caller = I->getFunction();
+    if (!Caller) {
+      UsesToRewrite.push_back(&U);
+      continue;
+    }
+
+    StringRef CallerName = Caller->getName();
+    bool IsAdaptiveInternal = Caller == F || Caller == metadata.wrapper ||
+                              Caller == metadata.dispatcher ||
+                              Caller->hasFnAttribute("adaptive") ||
+                              CallerName.contains("_orig_v") ||
+                              CallerName.ends_with("_orig_wrapper") ||
+                              CallerName.ends_with("_orig");
+
+    if (!IsAdaptiveInternal)
+      UsesToRewrite.push_back(&U);
+  }
+
+  for (Use *U : UsesToRewrite)
+    U->set(metadata.dispatcher);
+
   F->setLinkage(GlobalValue::InternalLinkage);
 
   functionMap[F] = metadata;
@@ -1053,7 +1158,7 @@ void SimpleAdaptivePassImpl::createInitializationFunction(Module &M) {
     for (auto &pair : functionMap) {
       FunctionMetadata &metadata = pair.second;
       if (metadata.profilingComplete) { // Only profiling mode has this
-        Value *FuncName = Builder.CreateGlobalStringPtr(pair.first->getName());
+        Value *FuncName = Builder.CreateGlobalStringPtr(metadata.profileKey);
 
         SmallVector<Value *, 16> RegArgs;
         RegArgs.push_back(FuncName);
