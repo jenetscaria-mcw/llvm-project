@@ -246,6 +246,7 @@ Function *SimpleAdaptivePassImpl::createVersion(Function *Orig,
   Function *Clone = CloneFunction(Orig, VMap);
   Clone->setName(Orig->getName() + "_v" + std::to_string(versionIndex));
   Clone->setLinkage(GlobalValue::InternalLinkage);
+  Clone->setCallingConv(Orig->getCallingConv());
 
   // CRITICAL FIX: Remove adaptive attribute to prevent recursive processing
   // Without this, cloned versions inherit the attribute and trigger infinite
@@ -406,6 +407,12 @@ SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metadata,
       Function::Create(WrapperType, GlobalValue::ExternalLinkage,
                        Orig->getName() + "_wrapper", &M);
   Wrapper->setAttributes(Orig->getAttributes());
+  Wrapper->setCallingConv(Orig->getCallingConv());
+  Wrapper->setVisibility(Orig->getVisibility());
+  Wrapper->setUnnamedAddr(Orig->getUnnamedAddr());
+  Wrapper->setDSOLocal(Orig->isDSOLocal());
+  if (Orig->hasComdat())
+    Wrapper->setComdat(Orig->getComdat());
 
   // CRITICAL FIX: Remove adaptive attribute to prevent recursive processing
   Wrapper->removeFnAttr("adaptive");
@@ -626,9 +633,8 @@ SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metadata,
         Value *MeanSquared = Builder.CreateFMul(Mean[v], Mean[v]);
         Value *ZeroF64 = ConstantFP::get(Builder.getDoubleTy(), 0.0);
         Value *Variance = Builder.CreateFSub(MeanOfSquares, MeanSquared);
-        Value *SafeVariance =
-            Builder.CreateSelect(Builder.CreateFCmpOGT(Variance, ZeroF64),
-                                 Variance, ZeroF64);
+        Value *SafeVariance = Builder.CreateSelect(
+            Builder.CreateFCmpOGT(Variance, ZeroF64), Variance, ZeroF64);
 
         Value *StdDev = Builder.CreateCall(SqrtFn, {SafeVariance});
         Value *SqrtN = Builder.CreateCall(SqrtFn, {SafeRuns});
@@ -660,7 +666,11 @@ SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metadata,
 
         // MINIMUM IMPROVEMENT: Require >10% improvement to avoid noise
         Value *ImprovementAbs = Builder.CreateFSub(BestMean, Mean[v]);
-        Value *ImprovementRatio = Builder.CreateFDiv(ImprovementAbs, BestMean);
+        Value *IsBestMeanNonZero = Builder.CreateFCmpONE(
+            BestMean, ConstantFP::get(Builder.getDoubleTy(), 0.0));
+        Value *ImprovementRatio = Builder.CreateSelect(
+            IsBestMeanNonZero, Builder.CreateFDiv(ImprovementAbs, BestMean),
+            ConstantFP::get(Builder.getDoubleTy(), 0.0));
         Value *MinImprovement =
             ConstantFP::get(Builder.getDoubleTy(), 0.10); // 10%
         Value *SignificantImprovement =
@@ -866,6 +876,12 @@ SimpleAdaptivePassImpl::createProductionWrapper(FunctionMetadata &metadata,
       Function::Create(WrapperType, GlobalValue::ExternalLinkage,
                        Orig->getName() + "_wrapper", &M);
   Wrapper->setAttributes(Orig->getAttributes());
+  Wrapper->setCallingConv(Orig->getCallingConv());
+  Wrapper->setVisibility(Orig->getVisibility());
+  Wrapper->setUnnamedAddr(Orig->getUnnamedAddr());
+  Wrapper->setDSOLocal(Orig->isDSOLocal());
+  if (Orig->hasComdat())
+    Wrapper->setComdat(Orig->getComdat());
 
   // CRITICAL FIX: Remove adaptive attribute to prevent recursive processing
   Wrapper->removeFnAttr("adaptive");
@@ -997,6 +1013,7 @@ Function *SimpleAdaptivePassImpl::createThinDispatcher(
   Function *Dispatcher =
       Function::Create(DispatcherType, Orig->getLinkage(), targetName, &M);
   Dispatcher->setAttributes(Orig->getAttributes());
+  Dispatcher->setCallingConv(Orig->getCallingConv());
 
   // CRITICAL FIX: Remove adaptive attribute to prevent recursive processing
   Dispatcher->removeFnAttr("adaptive");
@@ -1034,6 +1051,14 @@ void SimpleAdaptivePassImpl::processAdaptiveFunction(Function *F, Module &M) {
   auto originalUnnamedAddr = F->getUnnamedAddr();
   bool originalDSOLocal = F->isDSOLocal();
   Comdat *originalComdat = F->hasComdat() ? F->getComdat() : nullptr;
+
+  // CRITICAL FIX: Skip variadic functions as the current wrapper logic does not
+  // support them properly
+  if (F->isVarArg()) {
+    errs() << "[ADAPTIVE] Skipping variadic function: " << originalName << "\n";
+    F->removeFnAttr("adaptive");
+    return;
+  }
 
   // RENAME ORIGINAL FIRST to avoid collision with dispatcher
   F->setName(originalName + "_orig");
@@ -1093,12 +1118,11 @@ void SimpleAdaptivePassImpl::processAdaptiveFunction(Function *F, Module &M) {
     }
 
     StringRef CallerName = Caller->getName();
-    bool IsAdaptiveInternal = Caller == F || Caller == metadata.wrapper ||
-                              Caller == metadata.dispatcher ||
-                              Caller->hasFnAttribute("adaptive") ||
-                              CallerName.contains("_orig_v") ||
-                              CallerName.ends_with("_orig_wrapper") ||
-                              CallerName.ends_with("_orig");
+    bool IsAdaptiveInternal =
+        Caller == F || Caller == metadata.wrapper ||
+        Caller == metadata.dispatcher || Caller->hasFnAttribute("adaptive") ||
+        CallerName.contains("_orig_v") ||
+        CallerName.ends_with("_orig_wrapper") || CallerName.ends_with("_orig");
 
     if (!IsAdaptiveInternal)
       UsesToRewrite.push_back(&U);
