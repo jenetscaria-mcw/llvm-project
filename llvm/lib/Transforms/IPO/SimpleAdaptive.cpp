@@ -490,14 +490,19 @@ SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metadata,
       Builder.SetInsertPoint(VBB);
 
       if (Orig->getReturnType()->isVoidTy()) {
-        Builder.CreateCall(metadata.versions[v]->getFunctionType(),
-                           metadata.versions[v], Args);
-        Builder.CreateBr(MeasureBB);
-      } else {
-        Value *VResult =
+        CallInst *CI =
             Builder.CreateCall(metadata.versions[v]->getFunctionType(),
                                metadata.versions[v], Args);
-        ResultPhi->addIncoming(VResult, VBB);
+        CI->setCallingConv(Orig->getCallingConv());
+        CI->setAttributes(Orig->getAttributes());
+        Builder.CreateBr(MeasureBB);
+      } else {
+        CallInst *CI =
+            Builder.CreateCall(metadata.versions[v]->getFunctionType(),
+                               metadata.versions[v], Args);
+        CI->setCallingConv(Orig->getCallingConv());
+        CI->setAttributes(Orig->getAttributes());
+        ResultPhi->addIncoming(CI, VBB);
         Builder.CreateBr(MeasureBB);
       }
     }
@@ -784,14 +789,19 @@ SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metadata,
       Builder.SetInsertPoint(BB);
 
       if (Orig->getReturnType()->isVoidTy()) {
-        Builder.CreateCall(metadata.versions[v]->getFunctionType(),
-                           metadata.versions[v], Args);
-        Builder.CreateBr(ReturnBB);
-      } else {
-        Value *VResult =
+        CallInst *CI =
             Builder.CreateCall(metadata.versions[v]->getFunctionType(),
                                metadata.versions[v], Args);
-        FinalResult->addIncoming(VResult, BB);
+        CI->setCallingConv(Orig->getCallingConv());
+        CI->setAttributes(Orig->getAttributes());
+        Builder.CreateBr(ReturnBB);
+      } else {
+        CallInst *CI =
+            Builder.CreateCall(metadata.versions[v]->getFunctionType(),
+                               metadata.versions[v], Args);
+        CI->setCallingConv(Orig->getCallingConv());
+        CI->setAttributes(Orig->getAttributes());
+        FinalResult->addIncoming(CI, BB);
         Builder.CreateBr(ReturnBB);
       }
     }
@@ -841,14 +851,19 @@ SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metadata,
       Builder.SetInsertPoint(BB);
 
       if (Orig->getReturnType()->isVoidTy()) {
-        Builder.CreateCall(metadata.versions[v]->getFunctionType(),
-                           metadata.versions[v], Args);
-        Builder.CreateBr(OptReturnBB);
-      } else {
-        Value *VResult =
+        CallInst *CI =
             Builder.CreateCall(metadata.versions[v]->getFunctionType(),
                                metadata.versions[v], Args);
-        OptResult->addIncoming(VResult, BB);
+        CI->setCallingConv(Orig->getCallingConv());
+        CI->setAttributes(Orig->getAttributes());
+        Builder.CreateBr(OptReturnBB);
+      } else {
+        CallInst *CI =
+            Builder.CreateCall(metadata.versions[v]->getFunctionType(),
+                               metadata.versions[v], Args);
+        CI->setCallingConv(Orig->getCallingConv());
+        CI->setAttributes(Orig->getAttributes());
+        OptResult->addIncoming(CI, BB);
         Builder.CreateBr(OptReturnBB);
       }
     }
@@ -992,11 +1007,15 @@ SimpleAdaptivePassImpl::createProductionWrapper(FunctionMetadata &metadata,
 
     // Direct call through function pointer - no atomics, no branches, no switch
     if (Orig->getReturnType()->isVoidTy()) {
-      Builder.CreateCall(WrapperType, FuncPtr, Args);
+      CallInst *CI = Builder.CreateCall(WrapperType, FuncPtr, Args);
+      CI->setCallingConv(Orig->getCallingConv());
+      CI->setAttributes(Orig->getAttributes());
       Builder.CreateRetVoid();
     } else {
-      Value *Result = Builder.CreateCall(WrapperType, FuncPtr, Args);
-      Builder.CreateRet(Result);
+      CallInst *CI = Builder.CreateCall(WrapperType, FuncPtr, Args);
+      CI->setCallingConv(Orig->getCallingConv());
+      CI->setAttributes(Orig->getAttributes());
+      Builder.CreateRet(CI);
     }
   }
 
@@ -1029,13 +1048,17 @@ Function *SimpleAdaptivePassImpl::createThinDispatcher(
     Args.push_back(&Arg);
 
   if (Orig->getReturnType()->isVoidTy()) {
-    Builder.CreateCall(metadata.wrapper->getFunctionType(), metadata.wrapper,
-                       Args);
+    CallInst *CI = Builder.CreateCall(metadata.wrapper->getFunctionType(),
+                                      metadata.wrapper, Args);
+    CI->setCallingConv(Orig->getCallingConv());
+    CI->setAttributes(Orig->getAttributes());
     Builder.CreateRetVoid();
   } else {
-    Value *Result = Builder.CreateCall(metadata.wrapper->getFunctionType(),
-                                       metadata.wrapper, Args);
-    Builder.CreateRet(Result);
+    CallInst *CI = Builder.CreateCall(metadata.wrapper->getFunctionType(),
+                                      metadata.wrapper, Args);
+    CI->setCallingConv(Orig->getCallingConv());
+    CI->setAttributes(Orig->getAttributes());
+    Builder.CreateRet(CI);
   }
 
   return Dispatcher;
