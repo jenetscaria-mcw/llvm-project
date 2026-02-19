@@ -261,7 +261,7 @@ extern "C" void __adaptive_write_profile(const char *func_name,
   FILE *file = fopen(profile_path, "a");
 
   if (file) {
-    // fprintf(file, "%s:%d\n", func_name, best_version);
+    fprintf(file, "%s:%d\n", func_name, best_version);
     fflush(file); // Ensure immediate write
     fclose(file);
 
