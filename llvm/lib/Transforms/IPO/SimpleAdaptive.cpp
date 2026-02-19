@@ -324,24 +324,14 @@ Function *SimpleAdaptivePassImpl::createVersion(Function *Orig,
     if (fc.canBenefitFromInlining) {
       Clone->addFnAttr(Attribute::AlwaysInline);
       Clone->addFnAttr("inline-threshold", "100000");
-      errs() << "[ADAPTIVE] " << Orig->getName()
-             << "_v3: canBenefitFromInlining - Applied AlwaysInline + "
-                "inline-threshold=100000\n";
     } else if (fc.canBenefitFromFastMath) {
       Clone->addFnAttr("unsafe-fp-math", "true");
       Clone->addFnAttr("no-nans-fp-math", "true");
       Clone->addFnAttr("no-infs-fp-math", "true");
-      errs() << "[ADAPTIVE] " << Orig->getName()
-             << "_v3: canBenefitFromFastMath - Applied unsafe-fp-math, "
-                "no-nans-fp-math, no-infs-fp-math\n";
     } else if (fc.manyBranches) {
       Clone->addFnAttr(Attribute::OptimizeForSize);
-      errs() << "[ADAPTIVE] " << Orig->getName()
-             << "_v3: manyBranches - Applied OptimizeForSize\n";
     } else {
       Clone->addFnAttr("unroll-count", "6");
-      errs() << "[ADAPTIVE] " << Orig->getName()
-             << "_v3: default - Applied unroll-count=6\n";
     }
     break;
   }
@@ -431,7 +421,10 @@ SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metadata,
     Args.push_back(&Arg);
 
   Value *FuncName = Builder.CreateGlobalStringPtr(metadata.profileKey);
-
+  // Declare printf for debugging
+  FunctionType *PrintfType = FunctionType::get(
+      i32Ty, {PointerType::get(Type::getInt8Ty(Ctx), 0)}, true);
+  FunctionCallee Printf = M.getOrInsertFunction("printf", PrintfType);
   // Load profilingComplete with ATOMIC ACQUIRE
   LoadInst *LoadComplete =
       Builder.CreateLoad(i32Ty, metadata.profilingComplete);
@@ -655,6 +648,31 @@ SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metadata,
         Mean[v] = Builder.CreateSelect(HasRuns, Mean[v], MaxVal);
         CV[v] = Builder.CreateSelect(HasRuns, CV[v], MaxVal);
         StdErr_arr[v] = Builder.CreateSelect(HasRuns, StdErr, ZeroStdErr);
+
+#if ADAPTIVE_DEBUG_PRINTS
+        Value *FinalAvg = Mean[v];
+        Value *FinalStdErr = StdErr_arr[v];
+        Value *FinalCV = CV[v];
+        Value *AvgForDisplay = Builder.CreateFPToUI(FinalAvg, i64Ty);
+        Value *StdErrForDisplay = Builder.CreateFPToUI(FinalStdErr, i64Ty);
+        Value *CVPercent = Builder.CreateFMul(
+            FinalCV, ConstantFP::get(Builder.getDoubleTy(), 100.0));
+        Value *CVForDisplay = Builder.CreateFPToUI(CVPercent, i32Ty);
+        Value *StatsMsg =
+            Builder.CreateGlobalStringPtr("STATS %s - V%d: total_cycles=%llu, "
+                                          "runs=%u, avg=%llu, stderr=%llu, "
+                                          "cv=%u%%\n");
+        Builder.CreateCall(
+            Printf, {StatsMsg, FuncName, ConstantInt::get(i32Ty, v), Cycles[v],
+                     Runs[v], AvgForDisplay, StdErrForDisplay, CVForDisplay});
+#else
+        Value *AvgForDisplay = Builder.CreateFPToUI(Mean[v], i64Ty);
+        Value *StatsMsg = Builder.CreateGlobalStringPtr(
+            "STATS %s - V%d: total_cycles=%llu, runs=%u, avg=%llu\n");
+        Builder.CreateCall(Printf,
+                           {StatsMsg, FuncName, ConstantInt::get(i32Ty, v),
+                            Cycles[v], Runs[v], AvgForDisplay});
+#endif
       }
 
       // Select best version using Welch's t-test + 10% improvement threshold
@@ -677,7 +695,7 @@ SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metadata,
             IsBestMeanNonZero, Builder.CreateFDiv(ImprovementAbs, BestMean),
             ConstantFP::get(Builder.getDoubleTy(), 0.0));
         Value *MinImprovement =
-            ConstantFP::get(Builder.getDoubleTy(), 0.10); // 10%
+            ConstantFP::get(Builder.getDoubleTy(), 0.10);
         Value *SignificantImprovement =
             Builder.CreateFCmpOGT(ImprovementRatio, MinImprovement);
 

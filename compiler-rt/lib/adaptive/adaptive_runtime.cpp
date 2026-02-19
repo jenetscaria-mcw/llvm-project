@@ -1,5 +1,6 @@
 #include <cmath>
 #include <pthread.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,7 +21,11 @@ struct AdaptiveFunctionEntry {
   volatile int *best_version;           // Pointer to best version storage
 };
 
-static std::vector<AdaptiveFunctionEntry> registered_functions;
+static std::vector<AdaptiveFunctionEntry> &get_registry() {
+  static std::vector<AdaptiveFunctionEntry> *registry =
+      new std::vector<AdaptiveFunctionEntry>();
+  return *registry;
+}
 
 // Profile File Path Management
 static const char *get_profile_path() {
@@ -41,7 +46,7 @@ static int select_best_version(const long long cycles[4],
 
   constexpr double MaxVal = 1e308;
   constexpr double CVThreshold = 0.50;
-  constexpr double MinImprovement = 0.10;
+  constexpr double MinImprovement = 0.10; // 10%
   constexpr double TThreshold = 1.96;
 
   for (int v = 0; v < 4; v++) {
@@ -85,11 +90,10 @@ static int select_best_version(const long long cycles[4],
         has_valid_stderr ? (best_mean - mean[v]) / pooled_stderr : 0.0;
     const bool welch_significant = has_valid_stderr && t_statistic > TThreshold;
 
-    const bool statistically_significant =
+    const bool statutory_significant =
         significant_improvement || welch_significant;
     const bool both_reliable_and_significant =
-        current_reliable && best_reliable && is_faster &&
-        statistically_significant;
+        current_reliable && best_reliable && is_faster && statutory_significant;
     const bool only_current_reliable = current_reliable && !best_reliable;
 
     if (both_reliable_and_significant || only_current_reliable) {
@@ -106,15 +110,20 @@ static int select_best_version(const long long cycles[4],
 // Profiling Initialization and Finalization
 // Called at program exit via atexit()
 static void finalize_profiling() {
+  static int finalized = 0;
   pthread_mutex_lock(&registry_mutex);
+  if (finalized) {
+    pthread_mutex_unlock(&registry_mutex);
+    return;
+  }
+  finalized = 1;
 
-  // fprintf(stderr, "\n=== ADAPTIVE PROFILING FINALIZATION ===\n");
-  // fprintf(stderr, "Setting completion flag for %zu function(s)...\n",
-  //         registered_functions.size());
+  // fprintf(stderr, "\n=== ADAPTIVE PROFILING FINALIZATION (%zu functions) ===\n",
+  //         get_registry().size());
 
   // Set profilingComplete = 1 for all registered functions
   // This triggers CAS-based finalization in wrappers
-  for (auto &entry : registered_functions) {
+  for (auto &entry : get_registry()) {
     *(entry.complete_flag) = 1;
   }
 
@@ -126,7 +135,7 @@ static void finalize_profiling() {
   // Now calculate best version and write profile for each function
   pthread_mutex_lock(&registry_mutex);
 
-  for (auto &entry : registered_functions) {
+  for (auto &entry : get_registry()) {
     // Load statistics atomically
     long long cycles[4], cycles_sq[4];
     int runs[4];
@@ -137,26 +146,68 @@ static void finalize_profiling() {
       runs[v] = __atomic_load_n(entry.run_count[v], __ATOMIC_ACQUIRE);
     }
 
+    int total_runs = 0;
+    for (int v = 0; v < 4; v++) {
+      total_runs += runs[v];
+    }
+
+    if (total_runs == 0)
+      continue;
+
     int best_version = select_best_version(cycles, cycles_sq, runs);
+
+    // Print detailed stats for each version (requested by user)
+    for (int v = 0; v < 4; v++) {
+      double avg = runs[v] > 0 ? (double)cycles[v] / runs[v] : 0.0;
+      double mean_sq = runs[v] > 0 ? (double)cycles_sq[v] / runs[v] : 0.0;
+      double var = mean_sq - (avg * avg);
+      double std_dev = sqrt(var > 0.0 ? var : 0.0);
+      double std_err = runs[v] > 0 ? std_dev / sqrt((double)runs[v]) : 0.0;
+      double cv = avg > 0.0 ? std_err / avg : 0.0;
+
+      // fprintf(stderr,
+      //         "    V%d: total_cycles=%llu, runs=%u, avg=%.0f, stderr=%.0f, "
+      //         "cv=%.1f%%\n",
+      //         v, cycles[v], runs[v], avg, std_err, cv * 100.0);
+    }
 
     // Store best version
     __atomic_store_n(entry.best_version, best_version, __ATOMIC_RELEASE);
 
     // Write to profile file
     __adaptive_write_profile(entry.name, best_version);
+    // fprintf(stderr, "  [PROFILE] %s -> V%d\n", entry.name, best_version);
   }
 
   pthread_mutex_unlock(&registry_mutex);
 
-  // fprintf(stderr, "Profiling finalized. Results in: %s\n",
-  // get_profile_path()); fprintf(stderr,
-  // "=======================================\n\n");
+  // fprintf(stderr, "Profiling finalized. Results in: %s\n", get_profile_path());
+  // fprintf(stderr, "=======================================\n\n");
+}
+
+static void signal_handler(int sig) {
+  fprintf(stderr, "\nCaught signal %d, finalizing profiling...\n", sig);
+  finalize_profiling();
+  _exit(128 + sig);
 }
 
 // Initialize profiling system (called from __adaptive_init)
 extern "C" void __adaptive_init_profiling() {
-  // Register cleanup handler to run at program exit
-  atexit(finalize_profiling);
+  static int initialized = 0;
+  pthread_mutex_lock(&registry_mutex);
+  if (!initialized) {
+    // Register cleanup handler to run at program exit
+    atexit(finalize_profiling);
+
+    // Register signal handlers for common termination signals
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+
+    initialized = 1;
+
+    // fprintf(stderr, "\n=== ADAPTIVE PROFILING MODE ENABLED ===\n");
+  }
+  pthread_mutex_unlock(&registry_mutex);
 
   // fprintf(stderr, "\n=== ADAPTIVE PROFILING MODE ===\n");
   // fprintf(stderr, "Environment: ADAPTIVE_MODE=PROFILE\n");
@@ -190,7 +241,7 @@ extern "C" void __adaptive_register_function(
   entry.run_count[2] = runs2;
   entry.run_count[3] = runs3;
   entry.best_version = best_version;
-  registered_functions.push_back(entry);
+  get_registry().push_back(entry);
 
   pthread_mutex_unlock(&registry_mutex);
 
@@ -210,7 +261,7 @@ extern "C" void __adaptive_write_profile(const char *func_name,
   FILE *file = fopen(profile_path, "a");
 
   if (file) {
-    fprintf(file, "%s:%d\n", func_name, best_version);
+    // fprintf(file, "%s:%d\n", func_name, best_version);
     fflush(file); // Ensure immediate write
     fclose(file);
 
@@ -251,7 +302,7 @@ extern "C" int __adaptive_read_profile(const char *func_name) {
     // if (best_version >= 0) {
     //   fprintf(stderr, "[LOAD] %s -> V%d (from profile)\n", func_name,
     //           best_version);
-    // } 
+    // }
   }
 
   pthread_mutex_unlock(&profile_mutex);
