@@ -1330,8 +1330,16 @@ void SimpleAdaptivePassImpl::processAdaptiveFunction(
     for (Use *U : UsesToRewrite)
       U->set(Selected);
 
-    // Keep the old original internal and dead; normal DCE can clean it up.
-    F->setLinkage(GlobalValue::InternalLinkage);
+    // DCE: Erase unused variant clones and dead original to reduce binary size
+    for (int i = 0; i < 4; i++) {
+      if (i != selectedVersion && metadata.versions[i]) {
+        metadata.versions[i]->replaceAllUsesWith(
+            UndefValue::get(metadata.versions[i]->getType()));
+        metadata.versions[i]->eraseFromParent();
+      }
+    }
+    F->replaceAllUsesWith(UndefValue::get(F->getType()));
+    F->eraseFromParent();
     return;
   }
 
