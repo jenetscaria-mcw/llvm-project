@@ -1,4 +1,7 @@
 #include "llvm/Transforms/IPO/SimpleAdaptive.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/ScalarEvolution.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"
@@ -9,6 +12,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
+#include "llvm/ADT/SmallVector.h"
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
@@ -17,6 +21,11 @@
 #include <vector>
 
 #define ADAPTIVE_DEBUG_PRINTS 0
+
+// Early stopping: minimum total calls before checking convergence
+#define ADAPTIVE_MIN_PROFILE_CALLS 200
+// How often to re-check convergence after the minimum is reached
+#define ADAPTIVE_CONVERGENCE_CHECK_INTERVAL 200
 
 using namespace llvm;
 
@@ -29,14 +38,54 @@ struct FunctionMetadata {
   Function *dispatcher;
   std::string profileKey;
 
-  //  6 Global total
   GlobalVariable *cpuCycles[4];
   GlobalVariable *cpuCyclesSquared[4];
   GlobalVariable *runCount[4];
   GlobalVariable *currentVersion;
   GlobalVariable *profilingComplete; // 0=profiling, 1=finalize, 2=done
   GlobalVariable *bestVersion;
+  GlobalVariable *totalCallCount; // For early-stopping checks
 };
+
+// Optimization strategies for variant generation
+enum OptStrategy {
+  BASELINE,           // No special optimizations
+  VECTORIZE_AVX2,     // prefer-vector-width=256 + avx2
+  VECTORIZE_AVX512,   // prefer-vector-width=512 + avx512f,avx512vl
+  UNROLL_MODERATE,    // unroll-count=4
+  UNROLL_AGGRESSIVE,  // unroll-count=16 + interleave-count=4
+  FAST_MATH,          // unsafe-fp-math + no-nans + no-infs
+  AGGRESSIVE_INLINE,  // AlwaysInline + high inline-threshold
+  OPTIMIZE_SIZE,      // OptimizeForSize (better icache)
+  LOOP_UNROLL_VECTOR, // Combined: unroll + avx2 vectorization
+  PREFETCH_HEAVY,     // Software prefetch hints for memory-intensive
+};
+
+static const char *strategyName(OptStrategy s) {
+  switch (s) {
+  case BASELINE:
+    return "Baseline";
+  case VECTORIZE_AVX2:
+    return "Vectorize-AVX2";
+  case VECTORIZE_AVX512:
+    return "Vectorize-AVX512";
+  case UNROLL_MODERATE:
+    return "Unroll-Moderate";
+  case UNROLL_AGGRESSIVE:
+    return "Unroll-Aggressive";
+  case FAST_MATH:
+    return "Fast-Math";
+  case AGGRESSIVE_INLINE:
+    return "Aggressive-Inline";
+  case OPTIMIZE_SIZE:
+    return "Optimize-Size";
+  case LOOP_UNROLL_VECTOR:
+    return "Loop-Unroll+Vector";
+  case PREFETCH_HEAVY:
+    return "Prefetch-Heavy";
+  }
+  return "Unknown";
+}
 
 struct FunctionCharacteristics {
   int instructionCount;
@@ -46,6 +95,12 @@ struct FunctionCharacteristics {
   int fpOpCount;
   int callCount;
   int branchCount;
+
+  // Accurate analysis fields (from LoopInfo / ScalarEvolution)
+  int loopDepth;          // Maximum loop nesting depth
+  int estimatedTripCount; // Estimated trip count of hottest loop (0 = unknown)
+  int reductionCount;     // Number of reduction patterns detected
+  bool hasStrideAccess;   // Has loop-dependent memory access (vectorizable)
 
   bool isSmall;
   bool isMedium;
@@ -60,6 +115,84 @@ struct FunctionCharacteristics {
   bool canBenefitFromInlining;
   bool canBenefitFromFastMath;
 };
+
+// Select 4 optimization strategies for a function based on its characteristics
+static SmallVector<OptStrategy, 4>
+selectStrategies(const FunctionCharacteristics &fc) {
+  struct StrategyScore {
+    OptStrategy strategy;
+    int score;
+  };
+  SmallVector<StrategyScore, 10> candidates;
+
+  // Score each applicable strategy
+  if (fc.canBenefitFromVectorization) {
+    candidates.push_back({VECTORIZE_AVX2, 80 + fc.loopDepth * 10});
+    if (fc.estimatedTripCount == 0 || fc.estimatedTripCount > 16)
+      candidates.push_back({VECTORIZE_AVX512, 85 + fc.loopDepth * 10});
+  }
+
+  if (fc.canBenefitFromUnrolling) {
+    candidates.push_back(
+        {UNROLL_MODERATE, 60 + std::min(fc.loopCount * 5, 20)});
+    if (fc.isSmall || fc.estimatedTripCount > 8)
+      candidates.push_back(
+          {UNROLL_AGGRESSIVE, 70 + std::min(fc.loopCount * 5, 20)});
+  }
+
+  if (fc.canBenefitFromFastMath)
+    candidates.push_back({FAST_MATH, 75 + std::min(fc.fpOpCount, 20)});
+
+  if (fc.canBenefitFromInlining)
+    candidates.push_back({AGGRESSIVE_INLINE, 50});
+
+  if (fc.isLarge || fc.manyBranches)
+    candidates.push_back({OPTIMIZE_SIZE, 40});
+
+  if (fc.canBenefitFromVectorization && fc.canBenefitFromUnrolling)
+    candidates.push_back({LOOP_UNROLL_VECTOR, 90 + fc.loopDepth * 10});
+
+  if (fc.isMemoryIntensive && fc.hasLoops)
+    candidates.push_back(
+        {PREFETCH_HEAVY, 65 + std::min(fc.loadStoreCount, 30)});
+
+  // Sort by score descending
+  llvm::sort(candidates,
+             [](const StrategyScore &a, const StrategyScore &b) {
+               return a.score > b.score;
+             });
+
+  // Build result: baseline + top 3 unique strategies
+  SmallVector<OptStrategy, 4> strategies;
+  strategies.push_back(BASELINE);
+  for (size_t i = 0; i < candidates.size() && strategies.size() < 4; i++) {
+    bool dup = false;
+    for (OptStrategy s : strategies)
+      if (s == candidates[i].strategy) {
+        dup = true;
+        break;
+      }
+    if (!dup)
+      strategies.push_back(candidates[i].strategy);
+  }
+
+  // Fill remaining slots with fallbacks
+  OptStrategy fallbacks[] = {UNROLL_MODERATE, OPTIMIZE_SIZE, FAST_MATH};
+  for (OptStrategy fb : fallbacks) {
+    if (strategies.size() >= 4)
+      break;
+    bool dup = false;
+    for (OptStrategy s : strategies)
+      if (s == fb) {
+        dup = true;
+        break;
+      }
+    if (!dup)
+      strategies.push_back(fb);
+  }
+
+  return strategies;
+}
 
 // Helper Functions
 // Mode detection - controls which wrapper to generate
@@ -112,41 +245,85 @@ static std::string buildProfileKey(const Module &M, StringRef FuncName) {
   return (M.getModuleIdentifier() + "::" + FuncName.str());
 }
 
-// Analyze function characteristics
-static FunctionCharacteristics analyzeFunctionCharacteristics(Function *F) {
+// Analyze function characteristics using LLVM analysis infrastructure
+static FunctionCharacteristics
+analyzeFunctionCharacteristics(Function *F, FunctionAnalysisManager &FAM) {
   FunctionCharacteristics fc = {};
 
+  // Use LLVM's LoopInfo for accurate loop analysis
+  auto &LI = FAM.getResult<LoopAnalysis>(*F);
+  auto &SE = FAM.getResult<ScalarEvolutionAnalysis>(*F);
+
+  // Count all loops via depth-first traversal of the loop tree
+  SmallVector<Loop *, 8> Worklist(LI.begin(), LI.end());
+  while (!Worklist.empty()) {
+    Loop *L = Worklist.pop_back_val();
+    fc.loopCount++;
+    fc.loopDepth = std::max(fc.loopDepth, (int)L->getLoopDepth());
+    // Estimate trip count via ScalarEvolution
+    if (unsigned TC = SE.getSmallConstantTripCount(L))
+      fc.estimatedTripCount = std::max(fc.estimatedTripCount, (int)TC);
+    for (Loop *SubL : *L)
+      Worklist.push_back(SubL);
+  }
+
+  // Analyze instructions
   for (BasicBlock &BB : *F) {
     fc.basicBlockCount++;
+    Loop *BBLoop = LI.getLoopFor(&BB);
+    bool isLoopHeader = BBLoop && BBLoop->getHeader() == &BB;
 
     for (Instruction &I : BB) {
       fc.instructionCount++;
 
       if (isa<LoadInst>(I) || isa<StoreInst>(I)) {
         fc.loadStoreCount++;
+        // Detect stride access: GEP with loop-dependent index
+        if (BBLoop) {
+          Value *PtrOp = isa<LoadInst>(I)
+                             ? I.getOperand(0)
+                             : cast<StoreInst>(I).getPointerOperand();
+          if (auto *GEP =
+                  dyn_cast<GetElementPtrInst>(PtrOp->stripPointerCasts())) {
+            for (Use &Idx : GEP->indices()) {
+              if (auto *IdxI = dyn_cast<Instruction>(Idx.get()))
+                if (BBLoop->contains(IdxI))
+                  fc.hasStrideAccess = true;
+            }
+          }
+        }
       } else if (isa<CallInst>(I)) {
         fc.callCount++;
       } else if (isa<BranchInst>(I)) {
         fc.branchCount++;
-        BranchInst *BI = cast<BranchInst>(&I);
-        if (BI->isConditional()) {
-          fc.loopCount++;
-        }
       }
 
       Type *T = I.getType();
-      if (T->isFloatingPointTy()) {
+      if (T->isFloatingPointTy())
         fc.fpOpCount++;
-      }
 
-      for (Use &U : I.operands()) {
-        if (U.get()->getType()->isFloatingPointTy()) {
+      for (Use &U : I.operands())
+        if (U.get()->getType()->isFloatingPointTy())
           fc.hasFPMath = true;
+
+      // Detect reduction patterns: PHI in loop header with add/mul back-edge
+      if (isLoopHeader) {
+        if (auto *PN = dyn_cast<PHINode>(&I)) {
+          for (unsigned i = 0; i < PN->getNumIncomingValues(); i++) {
+            if (auto *BinOp =
+                    dyn_cast<BinaryOperator>(PN->getIncomingValue(i))) {
+              unsigned Op = BinOp->getOpcode();
+              if (Op == Instruction::Add || Op == Instruction::FAdd ||
+                  Op == Instruction::Mul || Op == Instruction::FMul)
+                fc.reductionCount++;
+            }
+          }
         }
       }
     }
   }
 
+  // Derived properties
   fc.isSmall = (fc.instructionCount < 50);
   fc.isMedium = (fc.instructionCount >= 50 && fc.instructionCount <= 200);
   fc.isLarge = (fc.instructionCount > 200);
@@ -155,9 +332,13 @@ static FunctionCharacteristics analyzeFunctionCharacteristics(Function *F) {
   fc.hasFPMath = (fc.fpOpCount > 0);
   fc.manyBranches = (fc.branchCount > 10);
 
+  // Improved benefit heuristics using accurate loop info
   fc.canBenefitFromVectorization =
-      fc.hasLoops && !fc.isLarge && !fc.isMemoryIntensive;
-  fc.canBenefitFromUnrolling = fc.hasLoops && (fc.isSmall || fc.isMedium);
+      fc.hasLoops && (fc.hasStrideAccess || fc.reductionCount > 0) &&
+      !fc.isMemoryIntensive;
+  fc.canBenefitFromUnrolling =
+      fc.hasLoops && (fc.isSmall || fc.isMedium) &&
+      (fc.estimatedTripCount == 0 || fc.estimatedTripCount > 2);
   fc.canBenefitFromInlining = fc.isSmall && (fc.callCount < 3);
   fc.canBenefitFromFastMath = fc.hasFPMath && !fc.isMemoryIntensive;
 
@@ -170,7 +351,8 @@ class SimpleAdaptivePassImpl {
 private:
   std::map<Function *, FunctionMetadata> functionMap;
 
-  Function *createVersion(Function *Orig, int versionIndex, Module &M);
+  Function *createVersion(Function *Orig, int versionIndex,
+                          OptStrategy strategy, Module &M);
   void createWrapperStaticVars(FunctionMetadata &metadata, Module &M);
   Function *createProfilingWrapper(FunctionMetadata &metadata,
                                    Module &M); // Profiling wrapper
@@ -178,7 +360,8 @@ private:
                                     Module &M); // Production wrapper
   Function *createThinDispatcher(FunctionMetadata &metadata, Module &M,
                                  std::string targetName);
-  void processAdaptiveFunction(Function *F, Module &M);
+  void processAdaptiveFunction(Function *F, Module &M,
+                               const SmallVector<OptStrategy, 4> &strategies);
   void createInitializationFunction(Module &M);
 
 public:
@@ -193,25 +376,31 @@ PreservedAnalyses SimpleAdaptivePass::run(Module &M,
 
 PreservedAnalyses SimpleAdaptivePassImpl::run(Module &M,
                                               ModuleAnalysisManager &MAM) {
-  bool modified = false;
+  // Get FunctionAnalysisManager for LoopInfo / ScalarEvolution access
+  auto &FAM =
+      MAM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
+
+  // Phase 1: Identify adaptive functions and analyze characteristics upfront
+  //          (before any transformations invalidate analysis results)
+  struct AdaptiveFuncInfo {
+    Function *F;
+    SmallVector<OptStrategy, 4> strategies;
+  };
+  SmallVector<AdaptiveFuncInfo, 8> adaptiveFunctions;
 
   for (Function &F : M) {
     if (F.isDeclaration() || F.isIntrinsic())
       continue;
 
-    // Check for adaptive attribute (no callcount - just "adaptive")
     bool isAdaptive = false;
-
-    if (F.hasFnAttribute("adaptive")) {
+    if (F.hasFnAttribute("adaptive"))
       isAdaptive = true;
-    }
 
     if (!isAdaptive && F.hasMetadata()) {
       if (MDNode *MD = F.getMetadata("annotation")) {
         for (unsigned i = 0; i < MD->getNumOperands(); i++) {
           if (MDString *MDS = dyn_cast<MDString>(MD->getOperand(i))) {
-            StringRef anno = MDS->getString();
-            if (anno == "adaptive") {
+            if (MDS->getString() == "adaptive") {
               isAdaptive = true;
               break;
             }
@@ -221,15 +410,35 @@ PreservedAnalyses SimpleAdaptivePassImpl::run(Module &M,
     }
 
     if (isAdaptive) {
-      processAdaptiveFunction(&F, M);
-      modified = true;
+      FunctionCharacteristics fc =
+          analyzeFunctionCharacteristics(&F, FAM);
+      auto strategies = selectStrategies(fc);
+
+      errs() << "[ADAPTIVE] " << F.getName()
+             << ": loops=" << fc.loopCount
+             << " depth=" << fc.loopDepth
+             << " trip=" << fc.estimatedTripCount
+             << " instrs=" << fc.instructionCount
+             << " reductions=" << fc.reductionCount
+             << " stride=" << fc.hasStrideAccess
+             << " | strategies:";
+      for (size_t i = 0; i < strategies.size(); i++)
+        errs() << " V" << i << "=" << strategyName(strategies[i]);
+      errs() << "\n";
+
+      adaptiveFunctions.push_back({&F, strategies});
     }
+  }
+
+  // Phase 2: Transform adaptive functions
+  bool modified = false;
+  for (auto &info : adaptiveFunctions) {
+    processAdaptiveFunction(info.F, M, info.strategies);
+    modified = true;
   }
 
   if (modified) {
     createInitializationFunction(M);
-
-    // Tell linker to automatically link the adaptive runtime library
     M.addModuleFlag(
         Module::AppendUnique, "Linker Options",
         MDNode::get(M.getContext(),
@@ -239,100 +448,95 @@ PreservedAnalyses SimpleAdaptivePassImpl::run(Module &M,
   return modified ? PreservedAnalyses::none() : PreservedAnalyses::all();
 }
 
-// Create Optimized Versions
+// Create Optimized Versions using strategy-based optimization
 Function *SimpleAdaptivePassImpl::createVersion(Function *Orig,
-                                                int versionIndex, Module &M) {
+                                                int versionIndex,
+                                                OptStrategy strategy,
+                                                Module &M) {
   ValueToValueMapTy VMap;
   Function *Clone = CloneFunction(Orig, VMap);
   Clone->setName(Orig->getName() + "_v" + std::to_string(versionIndex));
   Clone->setLinkage(GlobalValue::InternalLinkage);
   Clone->setCallingConv(Orig->getCallingConv());
 
-  // CRITICAL FIX: Remove adaptive attribute to prevent recursive processing
-  // Without this, cloned versions inherit the attribute and trigger infinite
-  // recursion
+  // Remove adaptive attribute to prevent recursive processing
   Clone->removeFnAttr("adaptive");
-
-  // Also remove from metadata annotations if present
   if (Clone->hasMetadata()) {
     if (MDNode *MD = Clone->getMetadata("annotation")) {
-      // Create a new annotation list without "adaptive"
       SmallVector<Metadata *, 4> NewAnnotations;
       for (unsigned i = 0; i < MD->getNumOperands(); i++) {
-        if (MDString *MDS = dyn_cast<MDString>(MD->getOperand(i))) {
-          if (MDS->getString() != "adaptive") {
+        if (MDString *MDS = dyn_cast<MDString>(MD->getOperand(i)))
+          if (MDS->getString() != "adaptive")
             NewAnnotations.push_back(MD->getOperand(i));
-          }
-        }
       }
-      if (!NewAnnotations.empty()) {
-        Clone->setMetadata("annotation",
-                           MDNode::get(M.getContext(), NewAnnotations));
-      } else {
-        Clone->setMetadata("annotation", nullptr);
-      }
+      Clone->setMetadata("annotation",
+                         NewAnnotations.empty()
+                             ? nullptr
+                             : MDNode::get(M.getContext(), NewAnnotations));
     }
   }
 
-  // Keep recursive calls inside each clone direct, so adaptive wrappers are not
-  // re-entered from hot recursive paths.
+  // Rewrite recursive self-calls to call the clone directly
   for (BasicBlock &BB : *Clone) {
     for (Instruction &I : BB) {
       auto *CB = dyn_cast<CallBase>(&I);
       if (!CB)
         continue;
       Value *Callee = CB->getCalledOperand()->stripPointerCasts();
-      if (Callee == Orig) {
+      if (Callee == Orig)
         CB->setCalledFunction(Clone);
-      }
     }
   }
 
-  FunctionCharacteristics fc = analyzeFunctionCharacteristics(Orig);
-
-  // Apply version-specific optimizations
-  switch (versionIndex) {
-  case 0: // Baseline
+  // Apply strategy-specific optimizations from the expanded pool
+  switch (strategy) {
+  case BASELINE:
+    // No special attributes — standard optimization pipeline
     break;
 
-  case 1: // Vectorization or prefetching
-    if (fc.canBenefitFromVectorization) {
-      Clone->addFnAttr("target-features", "+avx512f,+avx512vl");
-      Clone->addFnAttr("prefer-vector-width", "512");
-    } else if (fc.isMemoryIntensive) {
-      Clone->addFnAttr("prefetch-distance", "128");
-    } else {
-      Clone->addFnAttr("unroll-count", "4");
-    }
+  case VECTORIZE_AVX2:
+    Clone->addFnAttr("target-features", "+avx2");
+    Clone->addFnAttr("prefer-vector-width", "256");
     break;
 
-  case 2: // Aggressive unrolling
-    if (fc.canBenefitFromUnrolling && fc.isSmall) {
-      Clone->addFnAttr("unroll-count", "16");
-      Clone->addFnAttr("interleave-count", "4");
-    } else if (fc.canBenefitFromUnrolling && fc.isMedium) {
-      Clone->addFnAttr("unroll-count", "8");
-      Clone->addFnAttr("interleave-count", "2");
-    } else if (fc.canBenefitFromUnrolling) {
-      Clone->addFnAttr("unroll-count", "4");
-    } else {
-      Clone->addFnAttr("unroll-count", "2");
-    }
+  case VECTORIZE_AVX512:
+    Clone->addFnAttr("target-features", "+avx512f,+avx512vl");
+    Clone->addFnAttr("prefer-vector-width", "512");
     break;
 
-  case 3: // Specialty optimizations
-    if (fc.canBenefitFromInlining) {
-      Clone->addFnAttr(Attribute::AlwaysInline);
-      Clone->addFnAttr("inline-threshold", "100000");
-    } else if (fc.canBenefitFromFastMath) {
-      Clone->addFnAttr("unsafe-fp-math", "true");
-      Clone->addFnAttr("no-nans-fp-math", "true");
-      Clone->addFnAttr("no-infs-fp-math", "true");
-    } else if (fc.manyBranches) {
-      Clone->addFnAttr(Attribute::OptimizeForSize);
-    } else {
-      Clone->addFnAttr("unroll-count", "6");
-    }
+  case UNROLL_MODERATE:
+    Clone->addFnAttr("unroll-count", "4");
+    break;
+
+  case UNROLL_AGGRESSIVE:
+    Clone->addFnAttr("unroll-count", "16");
+    Clone->addFnAttr("interleave-count", "4");
+    break;
+
+  case FAST_MATH:
+    Clone->addFnAttr("unsafe-fp-math", "true");
+    Clone->addFnAttr("no-nans-fp-math", "true");
+    Clone->addFnAttr("no-infs-fp-math", "true");
+    break;
+
+  case AGGRESSIVE_INLINE:
+    Clone->addFnAttr(Attribute::AlwaysInline);
+    Clone->addFnAttr("inline-threshold", "100000");
+    break;
+
+  case OPTIMIZE_SIZE:
+    Clone->addFnAttr(Attribute::OptimizeForSize);
+    break;
+
+  case LOOP_UNROLL_VECTOR:
+    // Combined: moderate unrolling + AVX2 vectorization
+    Clone->addFnAttr("target-features", "+avx2");
+    Clone->addFnAttr("prefer-vector-width", "256");
+    Clone->addFnAttr("unroll-count", "4");
+    break;
+
+  case PREFETCH_HEAVY:
+    Clone->addFnAttr("prefetch-distance", "128");
     break;
   }
 
@@ -383,6 +587,12 @@ void SimpleAdaptivePassImpl::createWrapperStaticVars(FunctionMetadata &metadata,
       M, i32Ty, false, GlobalValue::InternalLinkage, ConstantInt::get(i32Ty, 0),
       "__adaptive_best_" + baseName);
   metadata.bestVersion->setAlignment(Align(4));
+
+  // Total call counter for early-stopping convergence checks
+  metadata.totalCallCount = new GlobalVariable(
+      M, i32Ty, false, GlobalValue::InternalLinkage, ConstantInt::get(i32Ty, 0),
+      "__adaptive_callcount_" + baseName);
+  metadata.totalCallCount->setAlignment(Align(4));
 }
 
 // Create Profiling Wrapper with CAS
@@ -562,6 +772,72 @@ SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metadata,
     StoreNext->setAtomic(AtomicOrdering::Release);
     StoreNext->setAlignment(Align(4));
 
+    // --- EARLY STOPPING: Check convergence periodically ---
+    // Increment total call counter
+    Value *OldCount = Builder.CreateAtomicRMW(
+        AtomicRMWInst::Add, metadata.totalCallCount,
+        ConstantInt::get(i32Ty, 1), MaybeAlign(), AtomicOrdering::Monotonic);
+    Value *NewCount = Builder.CreateAdd(OldCount, ConstantInt::get(i32Ty, 1));
+
+    // Check if we've reached the minimum profiling threshold
+    Value *AboveMin = Builder.CreateICmpUGE(
+        NewCount,
+        ConstantInt::get(i32Ty, ADAPTIVE_MIN_PROFILE_CALLS));
+    BasicBlock *MaybeConvergeBB =
+        BasicBlock::Create(Ctx, "maybe_converge", Wrapper);
+    BasicBlock *ProfilingRetBB =
+        BasicBlock::Create(Ctx, "profiling_ret", Wrapper);
+    Builder.CreateCondBr(AboveMin, MaybeConvergeBB, ProfilingRetBB);
+
+    // Only check convergence every ADAPTIVE_CONVERGENCE_CHECK_INTERVAL calls
+    Builder.SetInsertPoint(MaybeConvergeBB);
+    Value *Remainder = Builder.CreateURem(
+        NewCount,
+        ConstantInt::get(i32Ty, ADAPTIVE_CONVERGENCE_CHECK_INTERVAL));
+    Value *IsCheckTime =
+        Builder.CreateICmpEQ(Remainder, ConstantInt::get(i32Ty, 0));
+    BasicBlock *DoConvergeCheckBB =
+        BasicBlock::Create(Ctx, "do_converge_check", Wrapper);
+    Builder.CreateCondBr(IsCheckTime, DoConvergeCheckBB, ProfilingRetBB);
+
+    // Call runtime convergence check function
+    Builder.SetInsertPoint(DoConvergeCheckBB);
+    {
+      Type *i8PtrTy = PointerType::get(Type::getInt8Ty(Ctx), 0);
+      // __adaptive_check_convergence(complete_flag, cycles[4], cycles_sq[4],
+      //                              runs[4], best_version, name)
+      SmallVector<Type *, 16> CheckParams;
+      CheckParams.push_back(PointerType::get(i32Ty, 0)); // complete_flag
+      for (int i = 0; i < 4; i++)
+        CheckParams.push_back(PointerType::get(i64Ty, 0)); // cycles
+      for (int i = 0; i < 4; i++)
+        CheckParams.push_back(PointerType::get(i64Ty, 0)); // cycles_sq
+      for (int i = 0; i < 4; i++)
+        CheckParams.push_back(PointerType::get(i32Ty, 0)); // runs
+      CheckParams.push_back(PointerType::get(i32Ty, 0)); // best_version
+      CheckParams.push_back(i8PtrTy);                     // name
+
+      FunctionType *CheckType =
+          FunctionType::get(Type::getVoidTy(Ctx), CheckParams, false);
+      FunctionCallee CheckFn =
+          M.getOrInsertFunction("__adaptive_check_convergence", CheckType);
+
+      SmallVector<Value *, 16> CheckArgs;
+      CheckArgs.push_back(metadata.profilingComplete);
+      for (int i = 0; i < 4; i++)
+        CheckArgs.push_back(metadata.cpuCycles[i]);
+      for (int i = 0; i < 4; i++)
+        CheckArgs.push_back(metadata.cpuCyclesSquared[i]);
+      for (int i = 0; i < 4; i++)
+        CheckArgs.push_back(metadata.runCount[i]);
+      CheckArgs.push_back(metadata.bestVersion);
+      CheckArgs.push_back(FuncName);
+      Builder.CreateCall(CheckFn, CheckArgs);
+    }
+    Builder.CreateBr(ProfilingRetBB);
+
+    // Return from profiling state
+    Builder.SetInsertPoint(ProfilingRetBB);
     if (ResultPhi) {
       Builder.CreateRet(ResultPhi);
     } else {
@@ -1083,7 +1359,9 @@ Function *SimpleAdaptivePassImpl::createThinDispatcher(
 }
 
 // Process Adaptive Function
-void SimpleAdaptivePassImpl::processAdaptiveFunction(Function *F, Module &M) {
+void SimpleAdaptivePassImpl::processAdaptiveFunction(
+    Function *F, Module &M,
+    const SmallVector<OptStrategy, 4> &strategies) {
   FunctionMetadata metadata;
   metadata.original = F;
   std::string originalName = F->getName().str();
@@ -1093,8 +1371,7 @@ void SimpleAdaptivePassImpl::processAdaptiveFunction(Function *F, Module &M) {
   bool originalDSOLocal = F->isDSOLocal();
   Comdat *originalComdat = F->hasComdat() ? F->getComdat() : nullptr;
 
-  // CRITICAL FIX: Skip variadic functions as the current wrapper logic does not
-  // support them properly
+  // Skip variadic functions as the current wrapper logic does not support them
   if (F->isVarArg()) {
     errs() << "[ADAPTIVE] Skipping variadic function: " << originalName << "\n";
     F->removeFnAttr("adaptive");
@@ -1105,9 +1382,10 @@ void SimpleAdaptivePassImpl::processAdaptiveFunction(Function *F, Module &M) {
   F->setName(originalName + "_orig");
   metadata.profileKey = buildProfileKey(M, F->getName());
 
-  // Always create 4 optimized versions
+  // Create 4 optimized versions using selected strategies
   for (int i = 0; i < 4; i++) {
-    metadata.versions[i] = createVersion(F, i, M);
+    OptStrategy strat = (i < (int)strategies.size()) ? strategies[i] : BASELINE;
+    metadata.versions[i] = createVersion(F, i, strat, M);
   }
 
   if (isProductionMode()) {
