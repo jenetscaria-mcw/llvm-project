@@ -22,11 +22,6 @@
 
 #define ADAPTIVE_DEBUG_PRINTS 0
 
-// Early stopping: minimum total calls before checking convergence
-#define ADAPTIVE_MIN_PROFILE_CALLS 200
-// How often to re-check convergence after the minimum is reached
-#define ADAPTIVE_CONVERGENCE_CHECK_INTERVAL 200
-
 using namespace llvm;
 
 namespace llvm {
@@ -44,7 +39,6 @@ struct FunctionMetadata {
   GlobalVariable *currentVersion;
   GlobalVariable *profilingComplete; // 0=profiling, 1=finalize, 2=done
   GlobalVariable *bestVersion;
-  GlobalVariable *totalCallCount; // For early-stopping checks
 };
 
 // Optimization strategies for variant generation
@@ -587,12 +581,6 @@ void SimpleAdaptivePassImpl::createWrapperStaticVars(FunctionMetadata &metadata,
       M, i32Ty, false, GlobalValue::InternalLinkage, ConstantInt::get(i32Ty, 0),
       "__adaptive_best_" + baseName);
   metadata.bestVersion->setAlignment(Align(4));
-
-  // Total call counter for early-stopping convergence checks
-  metadata.totalCallCount = new GlobalVariable(
-      M, i32Ty, false, GlobalValue::InternalLinkage, ConstantInt::get(i32Ty, 0),
-      "__adaptive_callcount_" + baseName);
-  metadata.totalCallCount->setAlignment(Align(4));
 }
 
 // Create Profiling Wrapper with CAS
@@ -772,72 +760,6 @@ SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metadata,
     StoreNext->setAtomic(AtomicOrdering::Release);
     StoreNext->setAlignment(Align(4));
 
-    // --- EARLY STOPPING: Check convergence periodically ---
-    // Increment total call counter
-    Value *OldCount = Builder.CreateAtomicRMW(
-        AtomicRMWInst::Add, metadata.totalCallCount,
-        ConstantInt::get(i32Ty, 1), MaybeAlign(), AtomicOrdering::Monotonic);
-    Value *NewCount = Builder.CreateAdd(OldCount, ConstantInt::get(i32Ty, 1));
-
-    // Check if we've reached the minimum profiling threshold
-    Value *AboveMin = Builder.CreateICmpUGE(
-        NewCount,
-        ConstantInt::get(i32Ty, ADAPTIVE_MIN_PROFILE_CALLS));
-    BasicBlock *MaybeConvergeBB =
-        BasicBlock::Create(Ctx, "maybe_converge", Wrapper);
-    BasicBlock *ProfilingRetBB =
-        BasicBlock::Create(Ctx, "profiling_ret", Wrapper);
-    Builder.CreateCondBr(AboveMin, MaybeConvergeBB, ProfilingRetBB);
-
-    // Only check convergence every ADAPTIVE_CONVERGENCE_CHECK_INTERVAL calls
-    Builder.SetInsertPoint(MaybeConvergeBB);
-    Value *Remainder = Builder.CreateURem(
-        NewCount,
-        ConstantInt::get(i32Ty, ADAPTIVE_CONVERGENCE_CHECK_INTERVAL));
-    Value *IsCheckTime =
-        Builder.CreateICmpEQ(Remainder, ConstantInt::get(i32Ty, 0));
-    BasicBlock *DoConvergeCheckBB =
-        BasicBlock::Create(Ctx, "do_converge_check", Wrapper);
-    Builder.CreateCondBr(IsCheckTime, DoConvergeCheckBB, ProfilingRetBB);
-
-    // Call runtime convergence check function
-    Builder.SetInsertPoint(DoConvergeCheckBB);
-    {
-      Type *i8PtrTy = PointerType::get(Type::getInt8Ty(Ctx), 0);
-      // __adaptive_check_convergence(complete_flag, cycles[4], cycles_sq[4],
-      //                              runs[4], best_version, name)
-      SmallVector<Type *, 16> CheckParams;
-      CheckParams.push_back(PointerType::get(i32Ty, 0)); // complete_flag
-      for (int i = 0; i < 4; i++)
-        CheckParams.push_back(PointerType::get(i64Ty, 0)); // cycles
-      for (int i = 0; i < 4; i++)
-        CheckParams.push_back(PointerType::get(i64Ty, 0)); // cycles_sq
-      for (int i = 0; i < 4; i++)
-        CheckParams.push_back(PointerType::get(i32Ty, 0)); // runs
-      CheckParams.push_back(PointerType::get(i32Ty, 0)); // best_version
-      CheckParams.push_back(i8PtrTy);                     // name
-
-      FunctionType *CheckType =
-          FunctionType::get(Type::getVoidTy(Ctx), CheckParams, false);
-      FunctionCallee CheckFn =
-          M.getOrInsertFunction("__adaptive_check_convergence", CheckType);
-
-      SmallVector<Value *, 16> CheckArgs;
-      CheckArgs.push_back(metadata.profilingComplete);
-      for (int i = 0; i < 4; i++)
-        CheckArgs.push_back(metadata.cpuCycles[i]);
-      for (int i = 0; i < 4; i++)
-        CheckArgs.push_back(metadata.cpuCyclesSquared[i]);
-      for (int i = 0; i < 4; i++)
-        CheckArgs.push_back(metadata.runCount[i]);
-      CheckArgs.push_back(metadata.bestVersion);
-      CheckArgs.push_back(FuncName);
-      Builder.CreateCall(CheckFn, CheckArgs);
-    }
-    Builder.CreateBr(ProfilingRetBB);
-
-    // Return from profiling state
-    Builder.SetInsertPoint(ProfilingRetBB);
     if (ResultPhi) {
       Builder.CreateRet(ResultPhi);
     } else {

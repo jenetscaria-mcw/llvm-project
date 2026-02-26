@@ -116,51 +116,6 @@ static int select_best_version(const long long cycles[4],
   return best_version;
 }
 
-// Online convergence check — called from profiling wrapper periodically.
-// If all versions have enough samples and a clear winner exists, finalize early.
-extern "C" void __adaptive_check_convergence(
-    volatile int *complete_flag, volatile long long *cycles0,
-    volatile long long *cycles1, volatile long long *cycles2,
-    volatile long long *cycles3, volatile long long *cycles_sq0,
-    volatile long long *cycles_sq1, volatile long long *cycles_sq2,
-    volatile long long *cycles_sq3, volatile int *runs0, volatile int *runs1,
-    volatile int *runs2, volatile int *runs3, volatile int *best_version_out,
-    const char *name) {
-  // Don't re-check if already finalized
-  int current = __atomic_load_n(complete_flag, __ATOMIC_ACQUIRE);
-  if (current != 0)
-    return;
-
-  constexpr int MinSamplesPerVersion = 50;
-
-  long long cycles[4], cycles_sq[4];
-  int runs[4];
-  volatile long long *c_ptrs[] = {cycles0, cycles1, cycles2, cycles3};
-  volatile long long *csq_ptrs[] = {cycles_sq0, cycles_sq1, cycles_sq2,
-                                    cycles_sq3};
-  volatile int *r_ptrs[] = {runs0, runs1, runs2, runs3};
-
-  for (int v = 0; v < 4; v++) {
-    runs[v] = __atomic_load_n(r_ptrs[v], __ATOMIC_ACQUIRE);
-    if (runs[v] < MinSamplesPerVersion)
-      return; // Not enough data yet
-    cycles[v] = __atomic_load_n(c_ptrs[v], __ATOMIC_ACQUIRE);
-    cycles_sq[v] = __atomic_load_n(csq_ptrs[v], __ATOMIC_ACQUIRE);
-  }
-
-  // All versions have enough samples — run selection
-  int best = select_best_version(cycles, cycles_sq, runs);
-
-  // Store best version and write profile
-  __atomic_store_n(best_version_out, best, __ATOMIC_RELEASE);
-  __adaptive_write_profile(name, best);
-
-  // Transition profilingComplete: 0 -> 1 (triggers CAS finalization in wrapper)
-  int expected = 0;
-  __atomic_compare_exchange_n(complete_flag, &expected, 1, false,
-                              __ATOMIC_RELEASE, __ATOMIC_ACQUIRE);
-}
-
 // Called at program exit via atexit()
 static void finalize_profiling() {
   static int finalized = 0;
