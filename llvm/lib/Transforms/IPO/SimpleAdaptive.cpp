@@ -39,6 +39,15 @@ struct FunctionMetadata {
   GlobalVariable *currentVersion;
   GlobalVariable *profilingComplete; // 0=profiling, 1=finalize, 2=done
   GlobalVariable *bestVersion;
+
+  // Warmup: skip timing for first WARMUP_ROUNDS calls
+  GlobalVariable *warmupCounter;
+
+  // Paired t-tests: per-round measurements and difference accumulators
+  GlobalVariable *lastMeasurement[4];  // Most recent elapsed for each version
+  GlobalVariable *pairDiffSum[3];      // Accumulated (V_i - V0) for i=1,2,3
+  GlobalVariable *pairDiffSqSum[3];    // Accumulated (V_i - V0)^2
+  GlobalVariable *roundCount;          // Number of completed rounds
 };
 
 // Optimization strategies for variant generation
@@ -53,6 +62,9 @@ enum OptStrategy {
   OPTIMIZE_SIZE,      // OptimizeForSize (better icache)
   LOOP_UNROLL_VECTOR, // Combined: unroll + avx2 vectorization
   PREFETCH_HEAVY,     // Software prefetch hints for memory-intensive
+  VECTOR_FASTMATH,    // Combined: avx2 + fast-math (FP-heavy vectorizable loops)
+  UNROLL_FASTMATH,    // Combined: unroll-count=4 + fast-math
+  FULL_AGGRESSIVE,    // Combined: avx512 + unroll-count=8 + fast-math
 };
 
 static const char *strategyName(OptStrategy s) {
@@ -77,6 +89,12 @@ static const char *strategyName(OptStrategy s) {
     return "Loop-Unroll+Vector";
   case PREFETCH_HEAVY:
     return "Prefetch-Heavy";
+  case VECTOR_FASTMATH:
+    return "Vector+FastMath";
+  case UNROLL_FASTMATH:
+    return "Unroll+FastMath";
+  case FULL_AGGRESSIVE:
+    return "Full-Aggressive";
   }
   return "Unknown";
 }
@@ -145,6 +163,19 @@ selectStrategies(const FunctionCharacteristics &fc) {
 
   if (fc.canBenefitFromVectorization && fc.canBenefitFromUnrolling)
     candidates.push_back({LOOP_UNROLL_VECTOR, 90 + fc.loopDepth * 10});
+
+  // Combinatorial strategies — score highest when multiple traits are present
+  if (fc.canBenefitFromVectorization && fc.canBenefitFromFastMath)
+    candidates.push_back(
+        {VECTOR_FASTMATH, 92 + fc.loopDepth * 10 + std::min(fc.fpOpCount, 10)});
+
+  if (fc.canBenefitFromUnrolling && fc.canBenefitFromFastMath)
+    candidates.push_back(
+        {UNROLL_FASTMATH, 82 + std::min(fc.loopCount * 5, 20)});
+
+  if (fc.canBenefitFromVectorization && fc.canBenefitFromUnrolling &&
+      fc.canBenefitFromFastMath && fc.isLarge)
+    candidates.push_back({FULL_AGGRESSIVE, 95 + fc.loopDepth * 10});
 
   if (fc.isMemoryIntensive && fc.hasLoops)
     candidates.push_back(
@@ -532,6 +563,34 @@ Function *SimpleAdaptivePassImpl::createVersion(Function *Orig,
   case PREFETCH_HEAVY:
     Clone->addFnAttr("prefetch-distance", "128");
     break;
+
+  case VECTOR_FASTMATH:
+    // Combined: AVX2 vectorization + fast-math
+    Clone->addFnAttr("target-features", "+avx2");
+    Clone->addFnAttr("prefer-vector-width", "256");
+    Clone->addFnAttr("unsafe-fp-math", "true");
+    Clone->addFnAttr("no-nans-fp-math", "true");
+    Clone->addFnAttr("no-infs-fp-math", "true");
+    break;
+
+  case UNROLL_FASTMATH:
+    // Combined: moderate unrolling + fast-math
+    Clone->addFnAttr("unroll-count", "4");
+    Clone->addFnAttr("unsafe-fp-math", "true");
+    Clone->addFnAttr("no-nans-fp-math", "true");
+    Clone->addFnAttr("no-infs-fp-math", "true");
+    break;
+
+  case FULL_AGGRESSIVE:
+    // Kitchen-sink: AVX512 + aggressive unrolling + fast-math
+    Clone->addFnAttr("target-features", "+avx512f,+avx512vl");
+    Clone->addFnAttr("prefer-vector-width", "512");
+    Clone->addFnAttr("unroll-count", "8");
+    Clone->addFnAttr("interleave-count", "2");
+    Clone->addFnAttr("unsafe-fp-math", "true");
+    Clone->addFnAttr("no-nans-fp-math", "true");
+    Clone->addFnAttr("no-infs-fp-math", "true");
+    break;
   }
 
   return Clone;
@@ -581,6 +640,38 @@ void SimpleAdaptivePassImpl::createWrapperStaticVars(FunctionMetadata &metadata,
       M, i32Ty, false, GlobalValue::InternalLinkage, ConstantInt::get(i32Ty, 0),
       "__adaptive_best_" + baseName);
   metadata.bestVersion->setAlignment(Align(4));
+
+  // Warmup counter
+  metadata.warmupCounter = new GlobalVariable(
+      M, i32Ty, false, GlobalValue::InternalLinkage, ConstantInt::get(i32Ty, 0),
+      "__adaptive_warmup_" + baseName);
+  metadata.warmupCounter->setAlignment(Align(4));
+
+  // Paired t-test globals
+  for (int v = 0; v < 4; v++) {
+    metadata.lastMeasurement[v] = new GlobalVariable(
+        M, i64Ty, false, GlobalValue::InternalLinkage,
+        ConstantInt::get(i64Ty, 0),
+        "__adaptive_lastmeas_" + baseName + "_v" + std::to_string(v));
+    metadata.lastMeasurement[v]->setAlignment(Align(8));
+  }
+  for (int i = 0; i < 3; i++) {
+    metadata.pairDiffSum[i] = new GlobalVariable(
+        M, i64Ty, false, GlobalValue::InternalLinkage,
+        ConstantInt::get(i64Ty, 0),
+        "__adaptive_pairdiff_" + baseName + "_" + std::to_string(i + 1));
+    metadata.pairDiffSum[i]->setAlignment(Align(8));
+
+    metadata.pairDiffSqSum[i] = new GlobalVariable(
+        M, i64Ty, false, GlobalValue::InternalLinkage,
+        ConstantInt::get(i64Ty, 0),
+        "__adaptive_pairdiffsq_" + baseName + "_" + std::to_string(i + 1));
+    metadata.pairDiffSqSum[i]->setAlignment(Align(8));
+  }
+  metadata.roundCount = new GlobalVariable(
+      M, i32Ty, false, GlobalValue::InternalLinkage, ConstantInt::get(i32Ty, 0),
+      "__adaptive_rounds_" + baseName);
+  metadata.roundCount->setAlignment(Align(4));
 }
 
 // Create Profiling Wrapper with CAS
@@ -649,6 +740,78 @@ SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metadata,
     LoadVersion->setAtomic(AtomicOrdering::Acquire);
     LoadVersion->setAlignment(Align(4));
     Value *Version = LoadVersion;
+
+    // --- WARMUP CHECK ---
+    // First 8 calls (2 full rounds) run without timing to stabilize icache
+    constexpr int WARMUP_ROUNDS = 8;
+    LoadInst *LoadWarmup = Builder.CreateLoad(i32Ty, metadata.warmupCounter);
+    LoadWarmup->setAtomic(AtomicOrdering::Acquire);
+    LoadWarmup->setAlignment(Align(4));
+    Value *WarmupDone = Builder.CreateICmpUGE(
+        LoadWarmup, ConstantInt::get(i32Ty, WARMUP_ROUNDS));
+
+    BasicBlock *WarmupBB = BasicBlock::Create(Ctx, "warmup_call", Wrapper);
+    BasicBlock *TimedBB = BasicBlock::Create(Ctx, "timed_profiling", Wrapper);
+    Builder.CreateCondBr(WarmupDone, TimedBB, WarmupBB);
+
+    // --- WARMUP PATH: call version without timing, rotate, return ---
+    Builder.SetInsertPoint(WarmupBB);
+    {
+      Builder.CreateAtomicRMW(AtomicRMWInst::Add, metadata.warmupCounter,
+                              ConstantInt::get(i32Ty, 1), MaybeAlign(),
+                              AtomicOrdering::Monotonic);
+
+      // Dispatch to current version
+      BasicBlock *WV0BB = BasicBlock::Create(Ctx, "warmup_v0", Wrapper);
+      BasicBlock *WV1BB = BasicBlock::Create(Ctx, "warmup_v1", Wrapper);
+      BasicBlock *WV2BB = BasicBlock::Create(Ctx, "warmup_v2", Wrapper);
+      BasicBlock *WV3BB = BasicBlock::Create(Ctx, "warmup_v3", Wrapper);
+      BasicBlock *WarmupRotBB =
+          BasicBlock::Create(Ctx, "warmup_rotate", Wrapper);
+
+      SwitchInst *WSwitch = Builder.CreateSwitch(Version, WV0BB, 4);
+      WSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 0)), WV0BB);
+      WSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 1)), WV1BB);
+      WSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 2)), WV2BB);
+      WSwitch->addCase(cast<ConstantInt>(ConstantInt::get(i32Ty, 3)), WV3BB);
+
+      PHINode *WarmupResultPhi = nullptr;
+      if (!Orig->getReturnType()->isVoidTy()) {
+        Builder.SetInsertPoint(WarmupRotBB);
+        WarmupResultPhi =
+            Builder.CreatePHI(Orig->getReturnType(), 4, "warmup_result");
+      }
+
+      BasicBlock *WBBs[] = {WV0BB, WV1BB, WV2BB, WV3BB};
+      for (int v = 0; v < 4; v++) {
+        Builder.SetInsertPoint(WBBs[v]);
+        CallInst *CI =
+            Builder.CreateCall(metadata.versions[v]->getFunctionType(),
+                               metadata.versions[v], Args);
+        CI->setCallingConv(Orig->getCallingConv());
+        CI->setAttributes(Orig->getAttributes());
+        if (WarmupResultPhi)
+          WarmupResultPhi->addIncoming(CI, WBBs[v]);
+        Builder.CreateBr(WarmupRotBB);
+      }
+
+      Builder.SetInsertPoint(WarmupRotBB);
+      Value *WNext =
+          Builder.CreateAdd(Version, ConstantInt::get(i32Ty, 1));
+      Value *WNextMod =
+          Builder.CreateURem(WNext, ConstantInt::get(i32Ty, 4));
+      StoreInst *WStore =
+          Builder.CreateStore(WNextMod, metadata.currentVersion);
+      WStore->setAtomic(AtomicOrdering::Release);
+      WStore->setAlignment(Align(4));
+      if (WarmupResultPhi)
+        Builder.CreateRet(WarmupResultPhi);
+      else
+        Builder.CreateRetVoid();
+    }
+
+    // --- TIMED PROFILING PATH ---
+    Builder.SetInsertPoint(TimedBB);
 
     // RDTSC before
     Function *RdtscFn =
@@ -738,6 +901,9 @@ SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metadata,
                                 ConstantInt::get(i32Ty, 1), MaybeAlign(),
                                 AtomicOrdering::Monotonic);
 
+        // Store elapsed for paired t-test (per-round measurement)
+        Builder.CreateStore(Elapsed, metadata.lastMeasurement[v]);
+
         Builder.CreateBr(RotateBB);
       }
 
@@ -760,6 +926,41 @@ SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metadata,
     StoreNext->setAtomic(AtomicOrdering::Release);
     StoreNext->setAlignment(Align(4));
 
+    // --- PAIRED T-TEST: on round completion (version was V3) ---
+    Value *WasV3 =
+        Builder.CreateICmpEQ(Version, ConstantInt::get(i32Ty, 3));
+    BasicBlock *PairedUpdateBB =
+        BasicBlock::Create(Ctx, "paired_update", Wrapper);
+    BasicBlock *ProfilingRetBB =
+        BasicBlock::Create(Ctx, "profiling_ret", Wrapper);
+    Builder.CreateCondBr(WasV3, PairedUpdateBB, ProfilingRetBB);
+
+    Builder.SetInsertPoint(PairedUpdateBB);
+    {
+      // Load all 4 per-round measurements
+      Value *LastMeas[4];
+      for (int v = 0; v < 4; v++)
+        LastMeas[v] = Builder.CreateLoad(i64Ty, metadata.lastMeasurement[v]);
+
+      // Compute paired differences: V_i - V0 for i=1,2,3
+      for (int i = 0; i < 3; i++) {
+        Value *Diff = Builder.CreateSub(LastMeas[i + 1], LastMeas[0]);
+        Builder.CreateAtomicRMW(AtomicRMWInst::Add, metadata.pairDiffSum[i],
+                                Diff, MaybeAlign(), AtomicOrdering::Monotonic);
+        Value *DiffSq = Builder.CreateMul(Diff, Diff);
+        Builder.CreateAtomicRMW(AtomicRMWInst::Add, metadata.pairDiffSqSum[i],
+                                DiffSq, MaybeAlign(),
+                                AtomicOrdering::Monotonic);
+      }
+
+      // Increment round count
+      Builder.CreateAtomicRMW(AtomicRMWInst::Add, metadata.roundCount,
+                              ConstantInt::get(i32Ty, 1), MaybeAlign(),
+                              AtomicOrdering::Monotonic);
+      Builder.CreateBr(ProfilingRetBB);
+    }
+
+    Builder.SetInsertPoint(ProfilingRetBB);
     if (ResultPhi) {
       Builder.CreateRet(ResultPhi);
     } else {
@@ -1411,8 +1612,8 @@ void SimpleAdaptivePassImpl::createInitializationFunction(Module &M) {
     Type *i64PtrTy = PointerType::get(Type::getInt64Ty(Ctx), 0);
 
     // New signature: name, complete_flag, cycles[4], cycles_sq[4], runs[4],
-    // best_version
-    SmallVector<Type *, 16> RegParams;
+    // best_version, pair_diff[3], pair_diff_sq[3], round_count
+    SmallVector<Type *, 24> RegParams;
     RegParams.push_back(i8PtrTy);  // name
     RegParams.push_back(i32PtrTy); // complete_flag
     for (int i = 0; i < 4; i++)
@@ -1422,6 +1623,11 @@ void SimpleAdaptivePassImpl::createInitializationFunction(Module &M) {
     for (int i = 0; i < 4; i++)
       RegParams.push_back(i32PtrTy); // runs[4]
     RegParams.push_back(i32PtrTy);   // best_version
+    for (int i = 0; i < 3; i++)
+      RegParams.push_back(i64PtrTy); // pair_diff_sum[3]
+    for (int i = 0; i < 3; i++)
+      RegParams.push_back(i64PtrTy); // pair_diff_sq_sum[3]
+    RegParams.push_back(i32PtrTy);   // round_count
 
     FunctionType *RegType =
         FunctionType::get(Type::getVoidTy(Ctx), RegParams, false);
@@ -1433,7 +1639,7 @@ void SimpleAdaptivePassImpl::createInitializationFunction(Module &M) {
       if (metadata.profilingComplete) { // Only profiling mode has this
         Value *FuncName = Builder.CreateGlobalStringPtr(metadata.profileKey);
 
-        SmallVector<Value *, 16> RegArgs;
+        SmallVector<Value *, 24> RegArgs;
         RegArgs.push_back(FuncName);
         RegArgs.push_back(metadata.profilingComplete);
         for (int i = 0; i < 4; i++)
@@ -1443,6 +1649,11 @@ void SimpleAdaptivePassImpl::createInitializationFunction(Module &M) {
         for (int i = 0; i < 4; i++)
           RegArgs.push_back(metadata.runCount[i]);
         RegArgs.push_back(metadata.bestVersion);
+        for (int i = 0; i < 3; i++)
+          RegArgs.push_back(metadata.pairDiffSum[i]);
+        for (int i = 0; i < 3; i++)
+          RegArgs.push_back(metadata.pairDiffSqSum[i]);
+        RegArgs.push_back(metadata.roundCount);
 
         Builder.CreateCall(RegFunc, RegArgs);
       }

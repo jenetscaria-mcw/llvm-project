@@ -19,6 +19,11 @@ struct AdaptiveFunctionEntry {
   volatile long long *cpu_cycles_sq[4]; // Pointers to squared cycle counters
   volatile int *run_count[4];           // Pointers to run counters
   volatile int *best_version;           // Pointer to best version storage
+
+  // Paired t-test data
+  volatile long long *pair_diff_sum[3];    // Sum of (V_i - V0) for i=1,2,3
+  volatile long long *pair_diff_sq_sum[3]; // Sum of (V_i - V0)^2
+  volatile int *round_count;               // Number of complete rounds
 };
 
 static std::vector<AdaptiveFunctionEntry> &get_registry() {
@@ -116,6 +121,53 @@ static int select_best_version(const long long cycles[4],
   return best_version;
 }
 
+// Paired t-test based selection: uses per-round (V_i - V0) differences
+// Provides more statistical power by controlling for input/system variation
+static int select_best_version_paired(const long long pair_diff_sum[3],
+                                      const long long pair_diff_sq_sum[3],
+                                      int rounds) {
+  if (rounds < 30)
+    return -1; // Not enough rounds for paired test
+
+  constexpr double TThreshold = 1.96;
+  constexpr double MinImprovement = 0.10; // 10%
+
+  int best_version = 0; // V0 is the default (baseline)
+  double best_t = 0.0;
+
+  for (int i = 0; i < 3; i++) {
+    // Paired statistics for (V_{i+1} - V0)
+    const double n = (double)rounds;
+    const double mean_diff = (double)pair_diff_sum[i] / n;
+    const double mean_diff_sq = (double)pair_diff_sq_sum[i] / n;
+    double variance = mean_diff_sq - (mean_diff * mean_diff);
+
+    // Outlier-robust: clamp variance
+    const double max_var = 4.0 * mean_diff * mean_diff;
+    if (variance > max_var && max_var > 0.0)
+      variance = max_var;
+    if (variance < 0.0)
+      variance = 0.0;
+
+    const double std_err = sqrt(variance / n);
+    const double t_stat =
+        (std_err > 0.0) ? mean_diff / std_err : 0.0;
+
+    // Negative mean_diff means V_{i+1} is FASTER than V0
+    // We want t_stat < -TThreshold (significantly faster)
+    if (t_stat < -TThreshold && mean_diff < 0.0) {
+      // Check minimum improvement threshold against absolute diff
+      // mean_diff is negative, so -mean_diff is positive improvement
+      if (t_stat < best_t) {
+        best_t = t_stat;
+        best_version = i + 1;
+      }
+    }
+  }
+
+  return best_version;
+}
+
 // Called at program exit via atexit()
 static void finalize_profiling() {
   static int finalized = 0;
@@ -163,6 +215,22 @@ static void finalize_profiling() {
       continue;
 
     int best_version = select_best_version(cycles, cycles_sq, runs);
+
+    // Try paired t-test if we have enough round data
+    int round_count = __atomic_load_n(entry.round_count, __ATOMIC_ACQUIRE);
+    if (round_count >= 30) {
+      long long pdiff[3], pdiff_sq[3];
+      for (int i = 0; i < 3; i++) {
+        pdiff[i] =
+            __atomic_load_n(entry.pair_diff_sum[i], __ATOMIC_ACQUIRE);
+        pdiff_sq[i] =
+            __atomic_load_n(entry.pair_diff_sq_sum[i], __ATOMIC_ACQUIRE);
+      }
+      int paired_best =
+          select_best_version_paired(pdiff, pdiff_sq, round_count);
+      if (paired_best >= 0)
+        best_version = paired_best; // Prefer paired result
+    }
 
     // Print detailed stats for each version (requested by user)
     for (int v = 0; v < 4; v++) {
@@ -230,7 +298,11 @@ extern "C" void __adaptive_register_function(
     volatile long long *cycles3, volatile long long *cycles_sq0,
     volatile long long *cycles_sq1, volatile long long *cycles_sq2,
     volatile long long *cycles_sq3, volatile int *runs0, volatile int *runs1,
-    volatile int *runs2, volatile int *runs3, volatile int *best_version) {
+    volatile int *runs2, volatile int *runs3, volatile int *best_version,
+    volatile long long *pdiff0, volatile long long *pdiff1,
+    volatile long long *pdiff2, volatile long long *pdiffsq0,
+    volatile long long *pdiffsq1, volatile long long *pdiffsq2,
+    volatile int *round_count) {
   pthread_mutex_lock(&registry_mutex);
 
   AdaptiveFunctionEntry entry;
@@ -249,6 +321,13 @@ extern "C" void __adaptive_register_function(
   entry.run_count[2] = runs2;
   entry.run_count[3] = runs3;
   entry.best_version = best_version;
+  entry.pair_diff_sum[0] = pdiff0;
+  entry.pair_diff_sum[1] = pdiff1;
+  entry.pair_diff_sum[2] = pdiff2;
+  entry.pair_diff_sq_sum[0] = pdiffsq0;
+  entry.pair_diff_sq_sum[1] = pdiffsq1;
+  entry.pair_diff_sq_sum[2] = pdiffsq2;
+  entry.round_count = round_count;
   get_registry().push_back(entry);
 
   pthread_mutex_unlock(&registry_mutex);
