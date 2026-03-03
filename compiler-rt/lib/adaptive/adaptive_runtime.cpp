@@ -242,9 +242,9 @@ static void finalize_profiling() {
       double cv = avg > 0.0 ? std_err / avg : 0.0;
 
       // fprintf(stderr,
-      //         "    V%d: total_cycles=%llu, runs=%u, avg=%.0f, stderr=%.0f, "
+      //         "  [%s] V%d: total_cycles=%llu, runs=%u, avg=%.0f, stderr=%.0f, "
       //         "cv=%.1f%%\n",
-      //         v, cycles[v], runs[v], avg, std_err, cv * 100.0);
+      //         entry.name, v, cycles[v], runs[v], avg, std_err, cv * 100.0);
     }
 
     // Store best version
@@ -278,6 +278,15 @@ extern "C" void __adaptive_init_profiling() {
     // Register signal handlers for common termination signals
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
+
+    // Truncate the profile file so each profiling run starts fresh.
+    // This prevents stale/duplicate entries from accumulating across runs.
+    {
+      const char *profile_path = get_profile_path();
+      FILE *f = fopen(profile_path, "w");
+      if (f)
+        fclose(f);
+    }
 
     initialized = 1;
 
