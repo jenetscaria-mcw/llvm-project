@@ -13,6 +13,7 @@
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "llvm/ADT/SmallVector.h"
+#include <array>
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
@@ -241,7 +242,8 @@ static int readBestVersionFromProfile(const std::string &Key) {
   if (!profile.is_open())
     return -1;
 
-  int BestVersion = -1;
+  std::array<int, 4> VersionCounts = {0, 0, 0, 0};
+  int TotalMatches = 0;
   std::string line;
   while (std::getline(profile, line)) {
     size_t sep = line.rfind(':');
@@ -258,12 +260,38 @@ static int readBestVersionFromProfile(const std::string &Key) {
       continue;
     if (parsed < 0 || parsed > 3)
       continue;
-
-    // Keep the latest valid entry for this key.
-    BestVersion = static_cast<int>(parsed);
+    VersionCounts[parsed]++;
+    TotalMatches++;
   }
 
-  return BestVersion;
+  if (TotalMatches == 0)
+    return -1;
+
+  // Conservative policy for production:
+  // - V0 is always safe.
+  // - Non-baseline versions require a clear, repeated supermajority.
+  //   This avoids selecting unstable winners that can regress workloads.
+  int Winner = 0;
+  for (int v = 1; v < 4; v++) {
+    if (VersionCounts[v] > VersionCounts[Winner])
+      Winner = v;
+  }
+
+  for (int v = 0; v < 4; v++) {
+    if (v != Winner && VersionCounts[v] == VersionCounts[Winner])
+      return 0;
+  }
+
+  if (Winner == 0)
+    return 0;
+
+  // Require at least 3 wins and >=80% of observations for this key.
+  // Also require it to beat baseline's vote count.
+  if (VersionCounts[Winner] < 3 || VersionCounts[Winner] <= VersionCounts[0] ||
+      VersionCounts[Winner] * 5 < TotalMatches * 4)
+    return 0;
+
+  return Winner;
 }
 
 static std::string buildProfileKey(const Module &M, StringRef FuncName) {
@@ -385,7 +413,7 @@ private:
                                     Module &M); // Production wrapper
   Function *createThinDispatcher(FunctionMetadata &metadata, Module &M,
                                  std::string targetName);
-  void processAdaptiveFunction(Function *F, Module &M,
+  bool processAdaptiveFunction(Function *F, Module &M,
                                const SmallVector<OptStrategy, 4> &strategies);
   void createInitializationFunction(Module &M);
 
@@ -458,11 +486,10 @@ PreservedAnalyses SimpleAdaptivePassImpl::run(Module &M,
   // Phase 2: Transform adaptive functions
   bool modified = false;
   for (auto &info : adaptiveFunctions) {
-    processAdaptiveFunction(info.F, M, info.strategies);
-    modified = true;
+    modified |= processAdaptiveFunction(info.F, M, info.strategies);
   }
 
-  if (modified) {
+  if (modified && isProfilingMode()) {
     createInitializationFunction(M);
     M.addModuleFlag(
         Module::AppendUnique, "Linker Options",
@@ -1482,7 +1509,7 @@ Function *SimpleAdaptivePassImpl::createThinDispatcher(
 }
 
 // Process Adaptive Function
-void SimpleAdaptivePassImpl::processAdaptiveFunction(
+bool SimpleAdaptivePassImpl::processAdaptiveFunction(
     Function *F, Module &M,
     const SmallVector<OptStrategy, 4> &strategies) {
   FunctionMetadata metadata;
@@ -1498,7 +1525,21 @@ void SimpleAdaptivePassImpl::processAdaptiveFunction(
   if (F->isVarArg()) {
     errs() << "[ADAPTIVE] Skipping variadic function: " << originalName << "\n";
     F->removeFnAttr("adaptive");
-    return;
+    return false;
+  }
+
+  int selectedVersion = -1;
+  if (isProductionMode()) {
+    const std::string profileKey =
+        buildProfileKey(M, originalName + "_orig");
+    selectedVersion = readBestVersionFromProfile(profileKey);
+
+    // Keep the original function untouched when no trusted non-baseline
+    // profile winner exists. This avoids code-layout churn from cloning when
+    // we are effectively choosing baseline behavior.
+    if (selectedVersion <= 0 || selectedVersion > 3) {
+      return false;
+    }
   }
 
   // RENAME ORIGINAL FIRST to avoid collision with dispatcher
@@ -1512,10 +1553,6 @@ void SimpleAdaptivePassImpl::processAdaptiveFunction(
   }
 
   if (isProductionMode()) {
-    int selectedVersion = readBestVersionFromProfile(metadata.profileKey);
-    if (selectedVersion < 0 || selectedVersion > 3)
-      selectedVersion = 0;
-
     Function *Selected = metadata.versions[selectedVersion];
     Selected->setName(originalName);
     Selected->setLinkage(originalLinkage);
@@ -1541,7 +1578,7 @@ void SimpleAdaptivePassImpl::processAdaptiveFunction(
     }
     F->replaceAllUsesWith(UndefValue::get(F->getType()));
     F->eraseFromParent();
-    return;
+    return true;
   }
 
   // MODE-SPECIFIC WRAPPER GENERATION
@@ -1584,6 +1621,7 @@ void SimpleAdaptivePassImpl::processAdaptiveFunction(
   F->setLinkage(GlobalValue::InternalLinkage);
 
   functionMap[F] = metadata;
+  return true;
 }
 
 // Initialization Function

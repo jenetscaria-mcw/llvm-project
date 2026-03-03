@@ -125,12 +125,15 @@ static int select_best_version(const long long cycles[4],
 // Provides more statistical power by controlling for input/system variation
 static int select_best_version_paired(const long long pair_diff_sum[3],
                                       const long long pair_diff_sq_sum[3],
-                                      int rounds) {
+                                      int rounds, double baseline_mean) {
   if (rounds < 30)
     return -1; // Not enough rounds for paired test
 
   constexpr double TThreshold = 1.96;
   constexpr double MinImprovement = 0.10; // 10%
+
+  if (baseline_mean <= 0.0)
+    return -1;
 
   int best_version = 0; // V0 is the default (baseline)
   double best_t = 0.0;
@@ -142,22 +145,19 @@ static int select_best_version_paired(const long long pair_diff_sum[3],
     const double mean_diff_sq = (double)pair_diff_sq_sum[i] / n;
     double variance = mean_diff_sq - (mean_diff * mean_diff);
 
-    // Outlier-robust: clamp variance
-    const double max_var = 4.0 * mean_diff * mean_diff;
-    if (variance > max_var && max_var > 0.0)
-      variance = max_var;
     if (variance < 0.0)
       variance = 0.0;
 
     const double std_err = sqrt(variance / n);
     const double t_stat =
         (std_err > 0.0) ? mean_diff / std_err : 0.0;
+    const double improvement_ratio = (-mean_diff) / baseline_mean;
 
     // Negative mean_diff means V_{i+1} is FASTER than V0
-    // We want t_stat < -TThreshold (significantly faster)
-    if (t_stat < -TThreshold && mean_diff < 0.0) {
-      // Check minimum improvement threshold against absolute diff
-      // mean_diff is negative, so -mean_diff is positive improvement
+    // We want t_stat < -TThreshold (significantly faster) and at least
+    // MinImprovement reduction versus baseline mean.
+    if (t_stat < -TThreshold && mean_diff < 0.0 &&
+        improvement_ratio > MinImprovement) {
       if (t_stat < best_t) {
         best_t = t_stat;
         best_version = i + 1;
@@ -219,6 +219,8 @@ static void finalize_profiling() {
     // Try paired t-test if we have enough round data
     int round_count = __atomic_load_n(entry.round_count, __ATOMIC_ACQUIRE);
     if (round_count >= 30) {
+      const double baseline_mean =
+          runs[0] > 0 ? (double)cycles[0] / (double)runs[0] : 0.0;
       long long pdiff[3], pdiff_sq[3];
       for (int i = 0; i < 3; i++) {
         pdiff[i] =
@@ -227,7 +229,8 @@ static void finalize_profiling() {
             __atomic_load_n(entry.pair_diff_sq_sum[i], __ATOMIC_ACQUIRE);
       }
       int paired_best =
-          select_best_version_paired(pdiff, pdiff_sq, round_count);
+          select_best_version_paired(pdiff, pdiff_sq, round_count,
+                                     baseline_mean);
       if (paired_best >= 0)
         best_version = paired_best; // Prefer paired result
     }
