@@ -282,14 +282,14 @@ extern "C" void __adaptive_init_profiling() {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
-    // Truncate the profile file so each profiling run starts fresh.
-    // This prevents stale/duplicate entries from accumulating across runs.
-    {
-      const char *profile_path = get_profile_path();
-      FILE *f = fopen(profile_path, "w");
-      if (f)
-        fclose(f);
-    }
+    // // Truncate the profile file so each profiling run starts fresh.
+    // // This prevents stale/duplicate entries from accumulating across runs.
+    // {
+    //   const char *profile_path = get_profile_path();
+    //   FILE *f = fopen(profile_path, "w");
+    //   if (f)
+    //     fclose(f);
+    // }
 
     initialized = 1;
 
