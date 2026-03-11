@@ -267,10 +267,10 @@ static int readBestVersionFromProfile(const std::string &Key) {
   if (TotalMatches == 0)
     return -1;
 
-  // Conservative policy for production:
+  // Production policy:
   // - V0 is always safe.
-  // - Non-baseline versions require a clear, repeated supermajority.
-  //   This avoids selecting unstable winners that can regress workloads.
+  // - Choose a non-baseline winner when it is the unique top vote-getter
+  //   and it beats V0's vote count.
   int Winner = 0;
   for (int v = 1; v < 4; v++) {
     if (VersionCounts[v] > VersionCounts[Winner])
@@ -285,10 +285,8 @@ static int readBestVersionFromProfile(const std::string &Key) {
   if (Winner == 0)
     return 0;
 
-  // Require at least 3 wins and >=80% of observations for this key.
-  // Also require it to beat baseline's vote count.
-  if (VersionCounts[Winner] < 3 || VersionCounts[Winner] <= VersionCounts[0] ||
-      VersionCounts[Winner] * 5 < TotalMatches * 4)
+  // Require winner to beat baseline vote count.
+  if (VersionCounts[Winner] <= VersionCounts[0])
     return 0;
 
   return Winner;
