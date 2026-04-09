@@ -6,6 +6,7 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Pass.h"
@@ -33,6 +34,7 @@ struct FunctionMetadata {
   Function *wrapper;
   Function *dispatcher;
   std::string profileKey;
+  bool isMicro = false;  // Drives lower improvement threshold in profiling wrapper
 
   GlobalVariable *cpuCycles[4];
   GlobalVariable *cpuCyclesSquared[4];
@@ -66,6 +68,12 @@ enum OptStrategy {
   VECTOR_FASTMATH,    // Combined: avx2 + fast-math (FP-heavy vectorizable loops)
   UNROLL_FASTMATH,    // Combined: unroll-count=4 + fast-math
   FULL_AGGRESSIVE,    // Combined: avx512 + unroll-count=8 + fast-math
+  // Micro-function strategies: for tiny loopless functions (<20 instructions)
+  // where loop-gated strategies never fire. Target i-cache density and branch
+  // layout instead of vectorization/unrolling.
+  HOT_FLATTEN,        // hot attribute: place in hot code segment for i-cache density
+  BRANCH_HINT,        // minsize + branch-weight metadata: hot-path-first layout
+  MINSIZE_FAST,       // minsize: shrink instruction footprint, reduce i-cache pressure
 };
 
 static const char *strategyName(OptStrategy s) {
@@ -96,6 +104,12 @@ static const char *strategyName(OptStrategy s) {
     return "Unroll+FastMath";
   case FULL_AGGRESSIVE:
     return "Full-Aggressive";
+  case HOT_FLATTEN:
+    return "Hot-Flatten";
+  case BRANCH_HINT:
+    return "Branch-Hint";
+  case MINSIZE_FAST:
+    return "MinSize-Fast";
   }
   return "Unknown";
 }
@@ -115,6 +129,7 @@ struct FunctionCharacteristics {
   int reductionCount;     // Number of reduction patterns detected
   bool hasStrideAccess;   // Has loop-dependent memory access (vectorizable)
 
+  bool isMicro;  // < 20 instructions — tiny accessor/lookup/branch functions
   bool isSmall;
   bool isMedium;
   bool isLarge;
@@ -181,6 +196,16 @@ selectStrategies(const FunctionCharacteristics &fc) {
   if (fc.isMemoryIntensive && fc.hasLoops)
     candidates.push_back(
         {PREFETCH_HEAVY, 65 + std::min(fc.loadStoreCount, 30)});
+
+  // Micro-function strategies: for tiny loopless functions, all loop-gated
+  // strategies above score zero. Instead target what actually matters for
+  // sub-20-instruction functions: i-cache density and branch prediction.
+  // These are scored high (90/85/80) to ensure they win over fallbacks.
+  if (fc.isMicro) {
+    candidates.push_back({HOT_FLATTEN,  90});
+    candidates.push_back({BRANCH_HINT,  85});
+    candidates.push_back({MINSIZE_FAST, 80});
+  }
 
   // Sort by score descending
   llvm::sort(candidates,
@@ -375,6 +400,10 @@ analyzeFunctionCharacteristics(Function *F, FunctionAnalysisManager &FAM) {
   }
 
   // Derived properties
+  // Micro classification: functions with fewer than 20 instructions are tiny
+  // accessors, lookups, or branch-only functions where loop-gated strategies
+  // (vectorization, unrolling) never apply. These need i-cache/branch strategies.
+  fc.isMicro = (fc.instructionCount < 20);
   fc.isSmall = (fc.instructionCount < 50);
   fc.isMedium = (fc.instructionCount >= 50 && fc.instructionCount <= 200);
   fc.isLarge = (fc.instructionCount > 200);
@@ -410,7 +439,8 @@ private:
   Function *createThinDispatcher(FunctionMetadata &metadata, Module &M,
                                  std::string targetName);
   bool processAdaptiveFunction(Function *F, Module &M,
-                               const SmallVector<OptStrategy, 4> &strategies);
+                               const SmallVector<OptStrategy, 4> &strategies,
+                               bool isMicro);
   void createInitializationFunction(Module &M);
 
 public:
@@ -434,6 +464,7 @@ PreservedAnalyses SimpleAdaptivePassImpl::run(Module &M,
   struct AdaptiveFuncInfo {
     Function *F;
     SmallVector<OptStrategy, 4> strategies;
+    bool isMicro = false;  // Propagated to FunctionMetadata for threshold tuning
   };
   SmallVector<AdaptiveFuncInfo, 8> adaptiveFunctions;
 
@@ -475,14 +506,14 @@ PreservedAnalyses SimpleAdaptivePassImpl::run(Module &M,
         errs() << " V" << i << "=" << strategyName(strategies[i]);
       errs() << "\n";
 
-      adaptiveFunctions.push_back({&F, strategies});
+      adaptiveFunctions.push_back({&F, strategies, fc.isMicro});
     }
   }
 
   // Phase 2: Transform adaptive functions
   bool modified = false;
   for (auto &info : adaptiveFunctions) {
-    modified |= processAdaptiveFunction(info.F, M, info.strategies);
+    modified |= processAdaptiveFunction(info.F, M, info.strategies, info.isMicro);
   }
 
   if (modified && isProfilingMode()) {
@@ -613,6 +644,47 @@ Function *SimpleAdaptivePassImpl::createVersion(Function *Orig,
     Clone->addFnAttr("unsafe-fp-math", "true");
     Clone->addFnAttr("no-nans-fp-math", "true");
     Clone->addFnAttr("no-infs-fp-math", "true");
+    break;
+
+  // --- Micro-function strategies ---
+  // These target tiny loopless functions (<20 instructions) like accessors,
+  // type lookups, and hash-table probes. The bottleneck is i-cache density
+  // and branch prediction, not SIMD or loop throughput.
+
+  case HOT_FLATTEN:
+    // Mark as hot so the linker places this in the .hot code segment,
+    // improving i-cache locality when called at high frequency.
+    // NoInline prevents the function from being scattered across callers
+    // so it remains a single compact unit in the hot segment.
+    Clone->addFnAttr(Attribute::Hot);
+    Clone->addFnAttr(Attribute::NoInline);
+    break;
+
+  case BRANCH_HINT:
+    // MinSize reduces the instruction footprint per call.
+    // Branch-weight metadata tells the backend to lay out the most-likely
+    // successor as the fall-through path, saving a taken-branch penalty
+    // on the hot path. The 4:1 ratio is a general heuristic — profiling
+    // will reveal whether V0 (baseline) or this layout is actually faster.
+    Clone->addFnAttr(Attribute::MinSize);
+    for (BasicBlock &BB : *Clone) {
+      for (Instruction &I : BB) {
+        if (auto *BI = dyn_cast<BranchInst>(&I)) {
+          if (BI->isConditional()) {
+            MDBuilder MDB(Clone->getContext());
+            MDNode *BW = MDB.createBranchWeights(4, 1);
+            BI->setMetadata(LLVMContext::MD_prof, BW);
+          }
+        }
+      }
+    }
+    break;
+
+  case MINSIZE_FAST:
+    // Pure code-density optimization: MinSize requests smaller code
+    // generation without disabling other optimizations. This reduces
+    // i-cache pressure for frequently called tiny functions.
+    Clone->addFnAttr(Attribute::MinSize);
     break;
   }
 
@@ -1116,8 +1188,13 @@ SimpleAdaptivePassImpl::createProfilingWrapper(FunctionMetadata &metadata,
         Value *ImprovementRatio = Builder.CreateSelect(
             IsBestMeanNonZero, Builder.CreateFDiv(ImprovementAbs, BestMean),
             ConstantFP::get(Builder.getDoubleTy(), 0.0));
+        // Micro functions (<20 instructions) use a 5% threshold instead of 10%.
+        // For a 20-cycle function, 10% = 2 cycles — often within measurement
+        // noise even across rounds.  5% is still meaningful and detectable
+        // when accumulated over thousands of profiling calls.
+        double ImprovementThreshold = metadata.isMicro ? 0.05 : 0.10;
         Value *MinImprovement =
-            ConstantFP::get(Builder.getDoubleTy(), 0.10);
+            ConstantFP::get(Builder.getDoubleTy(), ImprovementThreshold);
         Value *SignificantImprovement =
             Builder.CreateFCmpOGT(ImprovementRatio, MinImprovement);
 
@@ -1364,9 +1441,11 @@ Function *SimpleAdaptivePassImpl::createThinDispatcher(
 // Process Adaptive Function
 bool SimpleAdaptivePassImpl::processAdaptiveFunction(
     Function *F, Module &M,
-    const SmallVector<OptStrategy, 4> &strategies) {
+    const SmallVector<OptStrategy, 4> &strategies,
+    bool isMicro) {
   FunctionMetadata metadata;
   metadata.original = F;
+  metadata.isMicro = isMicro;
   std::string originalName = F->getName().str();
   auto originalLinkage = F->getLinkage();
   auto originalVisibility = F->getVisibility();
