@@ -490,6 +490,22 @@ PreservedAnalyses SimpleAdaptivePassImpl::run(Module &M,
     }
 
     if (isAdaptive) {
+      // Skip functions with COMDAT groups or vague linkage (linkonce_odr,
+      // weak_odr, etc.).  These are template instantiations or inline
+      // functions emitted in every TU — the linker deduplicates them via
+      // COMDAT groups.  Versioning such functions creates _orig/_v0..v3
+      // sections that reference a COMDAT section the linker may discard,
+      // producing "defined in discarded section" errors.
+      if (F.hasComdat() || F.getLinkage() == GlobalValue::LinkOnceODRLinkage ||
+          F.getLinkage() == GlobalValue::WeakODRLinkage ||
+          F.getLinkage() == GlobalValue::LinkOnceAnyLinkage ||
+          F.getLinkage() == GlobalValue::WeakAnyLinkage) {
+        errs() << "[ADAPTIVE] Skipping COMDAT/vague-linkage function: "
+               << F.getName() << "\n";
+        F.removeFnAttr("adaptive");
+        continue;
+      }
+
       FunctionCharacteristics fc =
           analyzeFunctionCharacteristics(&F, FAM);
       auto strategies = selectStrategies(fc);
@@ -537,6 +553,11 @@ Function *SimpleAdaptivePassImpl::createVersion(Function *Orig,
   Clone->setName(Orig->getName() + "_v" + std::to_string(versionIndex));
   Clone->setLinkage(GlobalValue::InternalLinkage);
   Clone->setCallingConv(Orig->getCallingConv());
+
+  // Drop any inherited COMDAT — clones are internal and must not
+  // participate in cross-TU deduplication.
+  if (Clone->hasComdat())
+    Clone->setComdat(nullptr);
 
   // Remove adaptive attribute to prevent recursive processing
   Clone->removeFnAttr("adaptive");
@@ -1477,6 +1498,17 @@ bool SimpleAdaptivePassImpl::processAdaptiveFunction(
   // RENAME ORIGINAL FIRST to avoid collision with dispatcher
   F->setName(originalName + "_orig");
   metadata.profileKey = buildProfileKey(M, F->getName());
+
+  // Drop the COMDAT group from the renamed original.  Template
+  // instantiations and inline functions are emitted in COMDAT groups so
+  // the linker keeps only one copy.  After renaming to _orig the section
+  // name changes but may still carry the old COMDAT key, causing the
+  // linker to discard it while the versioned sections (_orig_v0 …
+  // _orig_v3) still reference it.  Clearing the COMDAT together with
+  // InternalLinkage (set below) prevents cross-TU deduplication from
+  // discarding the definition that is still needed within this TU.
+  if (F->hasComdat())
+    F->setComdat(nullptr);
 
   // Create 4 optimized versions using selected strategies
   for (int i = 0; i < 4; i++) {
