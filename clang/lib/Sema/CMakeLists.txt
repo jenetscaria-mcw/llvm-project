@@ -54,6 +54,7 @@ add_clang_library(clangSema
   SemaDeclObjC.cpp
   SemaExceptionSpec.cpp
   SemaExpr.cpp
+  SemaExprExtensions.cpp
   SemaExprCXX.cpp
   SemaExprMember.cpp
   SemaExprObjC.cpp
@@ -100,6 +101,9 @@ add_clang_library(clangSema
   SemaWasm.cpp
   SemaX86.cpp
   TypeLocBuilder.cpp
+
+  PRECOMPILE_HEADERS
+  [["clang/Sema/pch.h"]]
 
   DEPENDS
   ClangOpenCLBuiltinsImpl
