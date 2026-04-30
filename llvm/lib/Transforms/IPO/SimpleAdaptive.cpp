@@ -479,9 +479,10 @@ static int pickVariantForCallsite(CallBase *CB,
   Loop *L = CallerLI.getLoopFor(CB->getParent());
   int loopDepth = L ? (int)L->getLoopDepth() : 0;
 
+  // PSI signals are kept as bonus inputs but are inactive without PGO.
   bool isHot = false;
   bool isCold = false;
-  if (PSI) {
+  if (PSI && PSI->hasProfileSummary()) {
     auto &CallerBFI = FAM->getResult<BlockFrequencyAnalysis>(*Caller);
     isHot = PSI->isHotCallSite(*CB, &CallerBFI);
     isCold = PSI->isColdCallSite(*CB, &CallerBFI);
@@ -491,6 +492,20 @@ static int pickVariantForCallsite(CallBase *CB,
   for (Use &U : CB->args())
     if (isa<Constant>(U.get()))
       constArgCount++;
+
+  // Structural proxies (no PGO required).
+  unsigned callerInstCount = Caller->getInstructionCount();
+  unsigned bbInstCount = 0;
+  for (auto &I : *CB->getParent()) { (void)I; ++bbInstCount; }
+
+  // Cold proxy: outside any loop, in a large caller, with no folding signal.
+  // Big callers tend to be init/teardown/error scaffolding; callsites at
+  // depth 0 in such functions are rarely on the hot path.
+  bool structCold = (loopDepth == 0 && callerInstCount > 300 &&
+                     constArgCount == 0);
+  // Hot proxy: small caller (likely-inlinable accessor / wrapper) or a
+  // very tight basic block (compact code = often hot path).
+  bool structHot = (callerInstCount < 60) || (bbInstCount < 10);
 
   // Helper to optionally emit a trace line.
   bool trace = perCallsiteTraceEnabled();
@@ -511,20 +526,22 @@ static int pickVariantForCallsite(CallBase *CB,
   };
 
   // --- Rule table (priority order) ---
-  // Rule 1: Cold callsite or size-prioritized caller -> shrink the variant.
-  if (isCold || callerOptForSize) {
+  // Rule 1: Cold callsite (PGO or structural) or size-prioritized caller
+  //         -> shrink the variant.
+  if (isCold || callerOptForSize || structCold) {
     int v = findVariantWithStrategy(MD, {OPTIMIZE_SIZE, MINSIZE_FAST,
                                          BRANCH_HINT, HOT_FLATTEN});
-    if (v >= 0) { emit(v, 1, "cold/optsize+size_var_avail"); return v; }
-    emit(0, 1, "cold/optsize+no_size_var_avail->V0");
+    if (v >= 0) { emit(v, 1, "cold/optsize/struct+size_var_avail"); return v; }
+    emit(0, 1, "cold/optsize/struct+no_size_var_avail->V0");
     return 0; // V0 (smallest baseline)
   }
 
-  // Rule 2: Hot callsite (PGO hot or in a loop) with several constant args
-  //         -> AGGRESSIVE_INLINE pays off due to post-inline simplification.
-  if ((isHot || loopDepth >= 1) && constArgCount >= 2) {
+  // Rule 2: Hot-ish callsite (PGO hot, in a loop, or structural-hot proxy)
+  //         with several constant args -> AGGRESSIVE_INLINE pays off due
+  //         to post-inline simplification.
+  if ((isHot || loopDepth >= 1 || structHot) && constArgCount >= 2) {
     int v = findVariantWithStrategy(MD, {AGGRESSIVE_INLINE});
-    if (v >= 0) { emit(v, 2, "hot/loop+constArgs>=2+inline_avail"); return v; }
+    if (v >= 0) { emit(v, 2, "hot/loop/struct+constArgs>=2+inline_avail"); return v; }
   }
 
   // Rule 3: Inside a loop (any depth) -> prefer vectorize variants.
