@@ -262,34 +262,86 @@ static std::string getProfileFilePath() {
   return path ? std::string(path) : "/tmp/adaptive_profiles.txt";
 }
 
-static int readBestVersionFromProfile(const std::string &Key) {
+// Aggregated per-key profile data — accumulated across multiple PROFILE runs.
+struct ProfileStats {
+  std::array<int, 4>       votes      = {0, 0, 0, 0};
+  std::array<long long, 4> totCycles  = {0, 0, 0, 0};
+  std::array<long long, 4> totRuns    = {0, 0, 0, 0};
+  bool hasRich = false;   // saw at least one rich-format line
+  int totalMatches = 0;
+};
+
+// Parse "a,b,c,d" (4 comma-separated long longs) into out[].  Returns true
+// on success.
+template <typename T>
+static bool parse4CSV(const std::string &s, std::array<T, 4> &out) {
+  size_t i = 0;
+  for (int k = 0; k < 4; k++) {
+    if (i >= s.size()) return false;
+    char *end = nullptr;
+    long long v = std::strtoll(s.c_str() + i, &end, 10);
+    if (end == s.c_str() + i) return false;
+    out[k] = static_cast<T>(v);
+    i = static_cast<size_t>(end - s.c_str());
+    if (k < 3) {
+      if (i >= s.size() || s[i] != ',') return false;
+      i++;
+    }
+  }
+  return i == s.size();
+}
+
+// Read profile.txt, accumulating both vote counts (compatible with the simple
+// `<key>:<v>` format) and per-version cycle/run totals from rich-format
+// lines (`<key>:<v>|c0,c1,c2,c3|r0,r1,r2,r3`).
+static ProfileStats readProfileStats(const std::string &Key) {
+  ProfileStats stats;
   std::ifstream profile(getProfileFilePath());
   if (!profile.is_open())
-    return -1;
+    return stats;
 
-  std::array<int, 4> VersionCounts = {0, 0, 0, 0};
-  int TotalMatches = 0;
   std::string line;
   while (std::getline(profile, line)) {
-    size_t sep = line.rfind(':');
-    if (sep == std::string::npos)
-      continue;
+    // Find the key:version boundary.  Rich format has trailing `|...|...`
+    // after the version, so we look for the first `:` AFTER the prefix Key.
+    if (line.size() < Key.size() + 2) continue;
+    if (line.compare(0, Key.size(), Key) != 0) continue;
+    if (line[Key.size()] != ':') continue;
 
-    if (line.substr(0, sep) != Key)
-      continue;
-
-    const std::string versionStr = line.substr(sep + 1);
+    // Parse version (digits up to either end-of-line or `|`).
+    size_t i = Key.size() + 1;
     char *end = nullptr;
-    long parsed = std::strtol(versionStr.c_str(), &end, 10);
-    if (end == versionStr.c_str() || *end != '\0')
-      continue;
-    if (parsed < 0 || parsed > 3)
-      continue;
-    VersionCounts[parsed]++;
-    TotalMatches++;
-  }
+    long parsed = std::strtol(line.c_str() + i, &end, 10);
+    if (end == line.c_str() + i) continue;
+    if (parsed < 0 || parsed > 3) continue;
+    size_t after = static_cast<size_t>(end - line.c_str());
+    int v = static_cast<int>(parsed);
+    stats.votes[v]++;
+    stats.totalMatches++;
 
-  if (TotalMatches == 0)
+    // Optional rich tail: `|c0,c1,c2,c3|r0,r1,r2,r3`
+    if (after < line.size() && line[after] == '|') {
+      size_t bar2 = line.find('|', after + 1);
+      if (bar2 == std::string::npos) continue;
+      std::string cyclesStr = line.substr(after + 1, bar2 - after - 1);
+      std::string runsStr   = line.substr(bar2 + 1);
+      std::array<long long, 4> cycles;
+      std::array<long long, 4> runs;
+      if (!parse4CSV<long long>(cyclesStr, cycles)) continue;
+      if (!parse4CSV<long long>(runsStr, runs))     continue;
+      for (int k = 0; k < 4; k++) {
+        stats.totCycles[k] += cycles[k];
+        stats.totRuns[k]   += runs[k];
+      }
+      stats.hasRich = true;
+    }
+  }
+  return stats;
+}
+
+static int readBestVersionFromProfile(const std::string &Key) {
+  ProfileStats stats = readProfileStats(Key);
+  if (stats.totalMatches == 0)
     return -1;
 
   // Production policy:
@@ -298,12 +350,12 @@ static int readBestVersionFromProfile(const std::string &Key) {
   //   and it beats V0's vote count.
   int Winner = 0;
   for (int v = 1; v < 4; v++) {
-    if (VersionCounts[v] > VersionCounts[Winner])
+    if (stats.votes[v] > stats.votes[Winner])
       Winner = v;
   }
 
   for (int v = 0; v < 4; v++) {
-    if (v != Winner && VersionCounts[v] == VersionCounts[Winner])
+    if (v != Winner && stats.votes[v] == stats.votes[Winner])
       return 0;
   }
 
@@ -311,7 +363,7 @@ static int readBestVersionFromProfile(const std::string &Key) {
     return 0;
 
   // Require winner to beat baseline vote count.
-  if (VersionCounts[Winner] <= VersionCounts[0])
+  if (stats.votes[Winner] <= stats.votes[0])
     return 0;
 
   return Winner;

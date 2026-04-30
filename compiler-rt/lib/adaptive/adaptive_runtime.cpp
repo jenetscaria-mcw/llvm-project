@@ -42,6 +42,17 @@ static const char *get_profile_path() {
 extern "C" void __adaptive_write_profile(const char *func_name,
                                          int best_version);
 
+// Rich-format writer: emits per-version cycles + runs alongside the winner so
+// the production-mode reader can compute mean ratios and apply the
+// mean-ratio guard at compile time.  Format:
+//   <key>:<winner>|c0,c1,c2,c3|r0,r1,r2,r3
+// Backward compat: simple lines (`<key>:<winner>`) still parse correctly;
+// they just contribute a vote without per-version stats.
+extern "C" void __adaptive_write_profile_v2(const char *func_name,
+                                            int best_version,
+                                            const long long cycles[4],
+                                            const int runs[4]);
+
 static int select_best_version(const long long cycles[4],
                                const long long cycles_sq[4],
                                const int runs[4]) {
@@ -253,8 +264,9 @@ static void finalize_profiling() {
     // Store best version
     __atomic_store_n(entry.best_version, best_version, __ATOMIC_RELEASE);
 
-    // Write to profile file
-    __adaptive_write_profile(entry.name, best_version);
+    // Write to profile file (rich format: per-version cycles + runs included
+    // for the production-mode mean-ratio guard).
+    __adaptive_write_profile_v2(entry.name, best_version, cycles, runs);
     // fprintf(stderr, "  [PROFILE] %s -> V%d\n", entry.name, best_version);
   }
 
@@ -370,6 +382,28 @@ extern "C" void __adaptive_write_profile(const char *func_name,
     perror("fopen");
   }
 
+  pthread_mutex_unlock(&profile_mutex);
+}
+
+// Rich-format writer.  Same locking discipline as the simple writer.
+extern "C" void __adaptive_write_profile_v2(const char *func_name,
+                                            int best_version,
+                                            const long long cycles[4],
+                                            const int runs[4]) {
+  pthread_mutex_lock(&profile_mutex);
+  const char *profile_path = get_profile_path();
+  FILE *file = fopen(profile_path, "a");
+  if (file) {
+    fprintf(file, "%s:%d|%lld,%lld,%lld,%lld|%d,%d,%d,%d\n",
+            func_name, best_version,
+            cycles[0], cycles[1], cycles[2], cycles[3],
+            runs[0], runs[1], runs[2], runs[3]);
+    fflush(file);
+    fclose(file);
+  } else {
+    fprintf(stderr, "[ERROR] Cannot write to %s\n", profile_path);
+    perror("fopen");
+  }
   pthread_mutex_unlock(&profile_mutex);
 }
 
