@@ -57,6 +57,12 @@ struct FunctionMetadata {
   // Per-callsite (Hybrid B) bookkeeping. Only used in PRODUCTION mode.
   int variantStrategies[4] = {0, 0, 0, 0}; // OptStrategy stored as int to avoid include cycle
   int globalWinner = 0;                    // Empirical best variant from profile (0..3)
+  // Mean-ratio guard inputs.  meanRatio[v] = mean[v] / mean[globalWinner], so
+  // meanRatio[globalWinner] == 1.0 and ratios > 1 mean v is slower than the
+  // winner.  Default to 1.0 (== "no penalty known") when no rich profile
+  // data is available — falls open so missing data doesn't paralyze Phase 2.
+  double meanRatio[4] = {1.0, 1.0, 1.0, 1.0};
+  bool hasRichProfile = false;
 };
 
 // Optimization strategies for variant generation
@@ -395,6 +401,36 @@ static std::string buildProfileKey(const Module &M, StringRef FuncName) {
   return (M.getModuleIdentifier() + "::" + FuncName.str());
 }
 
+// Compute per-version mean ratios relative to the empirical winner's mean.
+// Result[winner] == 1.0; result[v] > 1.0 means v is slower than the winner.
+// When rich profile data is unavailable for v (no runs recorded), defaults
+// to 1.0 (= "no penalty known", guard does not refuse).  Returns {hasRich,
+// ratios}.
+static std::pair<bool, std::array<double, 4>>
+readMeanRatiosFromProfile(const std::string &Key, int Winner) {
+  std::array<double, 4> ratios = {1.0, 1.0, 1.0, 1.0};
+  ProfileStats stats = readProfileStats(Key);
+  if (!stats.hasRich || Winner < 0 || Winner > 3)
+    return {false, ratios};
+
+  std::array<double, 4> means = {0.0, 0.0, 0.0, 0.0};
+  for (int v = 0; v < 4; v++) {
+    if (stats.totRuns[v] > 0)
+      means[v] = static_cast<double>(stats.totCycles[v]) /
+                 static_cast<double>(stats.totRuns[v]);
+  }
+  if (means[Winner] <= 0.0)
+    return {false, ratios};
+
+  for (int v = 0; v < 4; v++) {
+    if (means[v] > 0.0)
+      ratios[v] = means[v] / means[Winner];
+    else
+      ratios[v] = 1.0; // no data → don't penalize
+  }
+  return {true, ratios};
+}
+
 // Find the variant index whose strategy matches one of `Wanted` (preference
 // order).  Returns -1 if none of `Wanted` is present in MD.variantStrategies.
 static int findVariantWithStrategy(const FunctionMetadata &MD,
@@ -509,6 +545,24 @@ static int pickVariantForCallsite(CallBase *CB,
   // Rule 5 (default): empirical global winner from profile.
   emit(MD.globalWinner, 5, "default_to_winner");
   return MD.globalWinner;
+}
+
+// Mean-ratio guard.  Wraps a Phase 2 rule decision: if the candidate variant
+// is significantly slower than the empirical winner according to the profile,
+// refuse the deviation and fall back to the winner.  Threshold is symmetric
+// with the wrapper's MinImprovement (10%): the wrapper requires V_i to be
+// >=10% faster than V0 to be declared a non-baseline winner; this guard
+// requires the candidate to be at most 10% slower than the winner to be
+// allowed as a deviation.
+static constexpr double MEAN_RATIO_GUARD_THRESHOLD = 1.10;
+static int applyMeanRatioGuard(int chosen, const FunctionMetadata &MD) {
+  if (chosen == MD.globalWinner) return chosen;
+  if (!MD.hasRichProfile) return chosen;       // no data → guard inactive
+  if (chosen < 0 || chosen > 3) return MD.globalWinner;
+  if (MD.meanRatio[chosen] > MEAN_RATIO_GUARD_THRESHOLD) {
+    return MD.globalWinner; // refuse: candidate is too slow vs winner
+  }
+  return chosen;
 }
 
 // Analyze function characteristics using LLVM analysis infrastructure
@@ -1697,6 +1751,16 @@ bool SimpleAdaptivePassImpl::processAdaptiveFunction(
     metadata.globalWinner =
         (selectedVersion >= 0 && selectedVersion <= 3) ? selectedVersion : 0;
 
+    // Populate per-version mean ratios for the guard (Phase 2 only consults
+    // these; Phase 1 / off ignore them).
+    if (pcMode == PerCallsiteMode::Phase2) {
+      auto [hasRich, ratios] =
+          readMeanRatiosFromProfile(profileKey, metadata.globalWinner);
+      metadata.hasRichProfile = hasRich;
+      for (int v = 0; v < 4; v++)
+        metadata.meanRatio[v] = ratios[v];
+    }
+
     if (pcMode == PerCallsiteMode::Off) {
       // LEGACY behaviour: avoid code-layout churn when winner is V0/missing.
       if (selectedVersion <= 0 || selectedVersion > 3) {
@@ -1791,6 +1855,10 @@ bool SimpleAdaptivePassImpl::processAdaptiveFunction(
       int chosen = pickVariantForCallsite(CB, metadata, pcMode, FAM, PSI);
       if (chosen < 0 || chosen > 3)
         chosen = gw;
+      // Mean-ratio guard: refuse Phase 2 deviations to variants that the
+      // profile says are >10% slower than the winner.
+      if (pcMode == PerCallsiteMode::Phase2)
+        chosen = applyMeanRatioGuard(chosen, metadata);
       U->set(metadata.versions[chosen]);
       ++callsiteCount;
       ++chosenHistogram[chosen];
