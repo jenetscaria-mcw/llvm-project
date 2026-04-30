@@ -1,5 +1,7 @@
 #include "llvm/Transforms/IPO/SimpleAdaptive.h"
+#include "llvm/Analysis/BlockFrequencyInfo.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/ProfileSummaryInfo.h"
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
@@ -51,6 +53,10 @@ struct FunctionMetadata {
   GlobalVariable *pairDiffSum[3];      // Accumulated (V_i - V0) for i=1,2,3
   GlobalVariable *pairDiffSqSum[3];    // Accumulated (V_i - V0)^2
   GlobalVariable *roundCount;          // Number of completed rounds
+
+  // Per-callsite (Hybrid B) bookkeeping. Only used in PRODUCTION mode.
+  int variantStrategies[4] = {0, 0, 0, 0}; // OptStrategy stored as int to avoid include cycle
+  int globalWinner = 0;                    // Empirical best variant from profile (0..3)
 };
 
 // Optimization strategies for variant generation
@@ -257,6 +263,22 @@ static bool isProductionMode() {
   return mode && std::string(mode) == "PRODUCTION";
 }
 
+// Per-callsite policy selection (Hybrid B).
+//   "off"     - legacy single-RAUW path (default, current production behavior)
+//   "phase1"  - per-callsite rewrite mechanic, "always pick global winner" policy
+//   "phase2"  - phase1 + heuristic rule table (BFI/PSI/InlineCost driven)
+enum class PerCallsiteMode { Off, Phase1, Phase2 };
+
+static PerCallsiteMode getPerCallsiteMode() {
+  const char *mode = std::getenv("ADAPTIVE_PER_CALLSITE");
+  if (!mode)
+    return PerCallsiteMode::Off;
+  std::string s(mode);
+  if (s == "phase1") return PerCallsiteMode::Phase1;
+  if (s == "phase2") return PerCallsiteMode::Phase2;
+  return PerCallsiteMode::Off;
+}
+
 static std::string getProfileFilePath() {
   const char *path = std::getenv("ADAPTIVE_PROFILE_PATH");
   return path ? std::string(path) : "/tmp/adaptive_profiles.txt";
@@ -371,6 +393,122 @@ static int readBestVersionFromProfile(const std::string &Key) {
 
 static std::string buildProfileKey(const Module &M, StringRef FuncName) {
   return (M.getModuleIdentifier() + "::" + FuncName.str());
+}
+
+// Find the variant index whose strategy matches one of `Wanted` (preference
+// order).  Returns -1 if none of `Wanted` is present in MD.variantStrategies.
+static int findVariantWithStrategy(const FunctionMetadata &MD,
+                                   std::initializer_list<int> Wanted) {
+  for (int strat : Wanted)
+    for (int v = 0; v < 4; v++)
+      if (MD.variantStrategies[v] == strat)
+        return v;
+  return -1;
+}
+
+// Per-callsite variant selection (Hybrid B).
+// When ADAPTIVE_PCS_TRACE=1 in the environment, emit a one-line dump of the
+// callsite context + which rule fired for diagnostic auditing.
+static bool perCallsiteTraceEnabled() {
+  const char *e = std::getenv("ADAPTIVE_PCS_TRACE");
+  return e && std::string(e) == "1";
+}
+
+// Phase 1: trivially returns the global winner — validates that the
+//          per-callsite rewrite mechanic produces results equivalent to the
+//          legacy single-RAUW path before introducing any heuristic deviation.
+// Phase 2: applies a small rule table using caller-side analyses
+//          (LoopInfo for loop depth, optional PSI/BFI for hot/cold, constant
+//          arg counting, caller fn-attrs).  Rules deviate from the global
+//          winner only when a strong context signal is present and the
+//          relevant strategy is one of the function's available variants.
+static int pickVariantForCallsite(CallBase *CB,
+                                  const FunctionMetadata &MD,
+                                  PerCallsiteMode Mode,
+                                  FunctionAnalysisManager *FAM = nullptr,
+                                  ProfileSummaryInfo *PSI = nullptr) {
+  if (Mode == PerCallsiteMode::Phase1 || !CB || !FAM)
+    return MD.globalWinner;
+
+  Function *Caller = CB->getFunction();
+  if (!Caller)
+    return MD.globalWinner;
+
+  // --- Gather callsite context ---
+  bool callerOptForSize = Caller->hasFnAttribute(Attribute::OptimizeForSize) ||
+                          Caller->hasFnAttribute(Attribute::MinSize) ||
+                          Caller->hasFnAttribute(Attribute::Cold);
+
+  auto &CallerLI = FAM->getResult<LoopAnalysis>(*Caller);
+  Loop *L = CallerLI.getLoopFor(CB->getParent());
+  int loopDepth = L ? (int)L->getLoopDepth() : 0;
+
+  bool isHot = false;
+  bool isCold = false;
+  if (PSI) {
+    auto &CallerBFI = FAM->getResult<BlockFrequencyAnalysis>(*Caller);
+    isHot = PSI->isHotCallSite(*CB, &CallerBFI);
+    isCold = PSI->isColdCallSite(*CB, &CallerBFI);
+  }
+
+  int constArgCount = 0;
+  for (Use &U : CB->args())
+    if (isa<Constant>(U.get()))
+      constArgCount++;
+
+  // Helper to optionally emit a trace line.
+  bool trace = perCallsiteTraceEnabled();
+  auto emit = [&](int chosen, int rule, const char *reason) {
+    if (!trace) return;
+    errs() << "[ADAPTIVE-TRACE] "
+           << "fn=" << MD.original->getName()
+           << " caller=" << Caller->getName()
+           << " loopDepth=" << loopDepth
+           << " constArgs=" << constArgCount
+           << " hot=" << (isHot ? 1 : 0)
+           << " cold=" << (isCold ? 1 : 0)
+           << " optsize=" << (callerOptForSize ? 1 : 0)
+           << " winner=V" << MD.globalWinner
+           << " chosen=V" << chosen
+           << " rule=" << rule
+           << " reason=" << reason << "\n";
+  };
+
+  // --- Rule table (priority order) ---
+  // Rule 1: Cold callsite or size-prioritized caller -> shrink the variant.
+  if (isCold || callerOptForSize) {
+    int v = findVariantWithStrategy(MD, {OPTIMIZE_SIZE, MINSIZE_FAST,
+                                         BRANCH_HINT, HOT_FLATTEN});
+    if (v >= 0) { emit(v, 1, "cold/optsize+size_var_avail"); return v; }
+    emit(0, 1, "cold/optsize+no_size_var_avail->V0");
+    return 0; // V0 (smallest baseline)
+  }
+
+  // Rule 2: Hot callsite (PGO hot or in a loop) with several constant args
+  //         -> AGGRESSIVE_INLINE pays off due to post-inline simplification.
+  if ((isHot || loopDepth >= 1) && constArgCount >= 2) {
+    int v = findVariantWithStrategy(MD, {AGGRESSIVE_INLINE});
+    if (v >= 0) { emit(v, 2, "hot/loop+constArgs>=2+inline_avail"); return v; }
+  }
+
+  // Rule 3: Inside a loop (any depth) -> prefer vectorize variants.
+  if (loopDepth >= 1) {
+    int v = findVariantWithStrategy(MD,
+        {VECTORIZE_AVX512, VECTOR_FASTMATH, LOOP_UNROLL_VECTOR,
+         VECTORIZE_AVX2, FULL_AGGRESSIVE});
+    if (v >= 0) { emit(v, 3, "loop+vectorize_avail"); return v; }
+  }
+
+  // Rule 4: Deep nested loop without other signals -> unroll variants.
+  if (loopDepth >= 2) {
+    int v = findVariantWithStrategy(MD,
+        {UNROLL_AGGRESSIVE, UNROLL_FASTMATH, UNROLL_MODERATE});
+    if (v >= 0) { emit(v, 4, "deep_loop+unroll_avail"); return v; }
+  }
+
+  // Rule 5 (default): empirical global winner from profile.
+  emit(MD.globalWinner, 5, "default_to_winner");
+  return MD.globalWinner;
 }
 
 // Analyze function characteristics using LLVM analysis infrastructure
@@ -492,7 +630,9 @@ private:
                                  std::string targetName);
   bool processAdaptiveFunction(Function *F, Module &M,
                                const SmallVector<OptStrategy, 4> &strategies,
-                               bool isMicro);
+                               bool isMicro,
+                               FunctionAnalysisManager *FAM = nullptr,
+                               ProfileSummaryInfo *PSI = nullptr);
   void createInitializationFunction(Module &M);
 
 public:
@@ -578,10 +718,14 @@ PreservedAnalyses SimpleAdaptivePassImpl::run(Module &M,
     }
   }
 
-  // Phase 2: Transform adaptive functions
+  // Phase 2: Transform adaptive functions.
+  // For Phase-2 per-callsite, pass FAM and (optionally) PSI through so the
+  // heuristic rule table can consult caller-side analyses.
+  ProfileSummaryInfo *PSI = MAM.getCachedResult<ProfileSummaryAnalysis>(M);
   bool modified = false;
   for (auto &info : adaptiveFunctions) {
-    modified |= processAdaptiveFunction(info.F, M, info.strategies, info.isMicro);
+    modified |= processAdaptiveFunction(info.F, M, info.strategies,
+                                        info.isMicro, &FAM, PSI);
   }
 
   if (modified && isProfilingMode()) {
@@ -1515,7 +1659,9 @@ Function *SimpleAdaptivePassImpl::createThinDispatcher(
 bool SimpleAdaptivePassImpl::processAdaptiveFunction(
     Function *F, Module &M,
     const SmallVector<OptStrategy, 4> &strategies,
-    bool isMicro) {
+    bool isMicro,
+    FunctionAnalysisManager *FAM,
+    ProfileSummaryInfo *PSI) {
   FunctionMetadata metadata;
   metadata.original = F;
   metadata.isMicro = isMicro;
@@ -1533,17 +1679,29 @@ bool SimpleAdaptivePassImpl::processAdaptiveFunction(
     return false;
   }
 
+  // PRODUCTION-MODE PROFILE LOOKUP + PATH SELECTION
+  // The legacy path (ADAPTIVE_PER_CALLSITE=off, default) early-returns when
+  // there is no clear non-baseline winner, leaving the function untouched.
+  // The per-callsite paths (phase1/phase2) ALWAYS proceed so the rewrite
+  // mechanic is exercised on every adaptive function — Phase 2 may pick a
+  // non-baseline variant at specific callsites even when the global winner
+  // is V0.
+  PerCallsiteMode pcMode =
+      isProductionMode() ? getPerCallsiteMode() : PerCallsiteMode::Off;
+
   int selectedVersion = -1;
   if (isProductionMode()) {
     const std::string profileKey =
         buildProfileKey(M, originalName + "_orig");
     selectedVersion = readBestVersionFromProfile(profileKey);
+    metadata.globalWinner =
+        (selectedVersion >= 0 && selectedVersion <= 3) ? selectedVersion : 0;
 
-    // Keep the original function untouched when no trusted non-baseline
-    // profile winner exists. This avoids code-layout churn from cloning when
-    // we are effectively choosing baseline behavior.
-    if (selectedVersion <= 0 || selectedVersion > 3) {
-      return false;
+    if (pcMode == PerCallsiteMode::Off) {
+      // LEGACY behaviour: avoid code-layout churn when winner is V0/missing.
+      if (selectedVersion <= 0 || selectedVersion > 3) {
+        return false;
+      }
     }
   }
 
@@ -1566,30 +1724,93 @@ bool SimpleAdaptivePassImpl::processAdaptiveFunction(
   for (int i = 0; i < 4; i++) {
     OptStrategy strat = (i < (int)strategies.size()) ? strategies[i] : BASELINE;
     metadata.versions[i] = createVersion(F, i, strat, M);
+    metadata.variantStrategies[i] = static_cast<int>(strat);
   }
 
   if (isProductionMode()) {
-    Function *Selected = metadata.versions[selectedVersion];
-    Selected->setName(originalName);
-    Selected->setLinkage(originalLinkage);
-    Selected->setVisibility(originalVisibility);
-    Selected->setUnnamedAddr(originalUnnamedAddr);
-    Selected->setDSOLocal(originalDSOLocal);
+    if (pcMode == PerCallsiteMode::Off) {
+      // === LEGACY PATH: single RAUW to one chosen variant ===
+      Function *Selected = metadata.versions[selectedVersion];
+      Selected->setName(originalName);
+      Selected->setLinkage(originalLinkage);
+      Selected->setVisibility(originalVisibility);
+      Selected->setUnnamedAddr(originalUnnamedAddr);
+      Selected->setDSOLocal(originalDSOLocal);
+      if (originalComdat)
+        Selected->setComdat(originalComdat);
+
+      SmallVector<Use *, 32> UsesToRewrite;
+      for (Use &U : F->uses())
+        UsesToRewrite.push_back(&U);
+      for (Use *U : UsesToRewrite)
+        U->set(Selected);
+
+      // DCE: Erase unused variant clones and dead original
+      for (int i = 0; i < 4; i++) {
+        if (i != selectedVersion && metadata.versions[i]) {
+          metadata.versions[i]->replaceAllUsesWith(
+              UndefValue::get(metadata.versions[i]->getType()));
+          metadata.versions[i]->eraseFromParent();
+        }
+      }
+      F->replaceAllUsesWith(UndefValue::get(F->getType()));
+      F->eraseFromParent();
+      return true;
+    }
+
+    // === PER-CALLSITE PATH (Hybrid B, Phase 1 / Phase 2) ===
+    // Default variant inherits the external symbol so cross-TU callers and
+    // any non-callsite uses (function pointers, vtable entries, etc.) still
+    // resolve to a sensible body.
+    const int gw = metadata.globalWinner;
+    Function *Default = metadata.versions[gw];
+    Default->setName(originalName);
+    Default->setLinkage(originalLinkage);
+    Default->setVisibility(originalVisibility);
+    Default->setUnnamedAddr(originalUnnamedAddr);
+    Default->setDSOLocal(originalDSOLocal);
     if (originalComdat)
-      Selected->setComdat(originalComdat);
+      Default->setComdat(originalComdat);
 
     SmallVector<Use *, 32> UsesToRewrite;
     for (Use &U : F->uses())
       UsesToRewrite.push_back(&U);
-    for (Use *U : UsesToRewrite)
-      U->set(Selected);
 
-    // DCE: Erase unused variant clones and dead original to reduce binary size
+    unsigned callsiteCount = 0;
+    unsigned nonCallsiteCount = 0;
+    std::array<unsigned, 4> chosenHistogram = {0, 0, 0, 0};
+    for (Use *U : UsesToRewrite) {
+      auto *CB = dyn_cast_or_null<CallBase>(U->getUser());
+      // Treat as a callsite only when the use is the *callee* operand, not
+      // a value argument that happens to be the function pointer.
+      if (!CB || !CB->isCallee(U)) {
+        U->set(Default);
+        ++nonCallsiteCount;
+        continue;
+      }
+      int chosen = pickVariantForCallsite(CB, metadata, pcMode, FAM, PSI);
+      if (chosen < 0 || chosen > 3)
+        chosen = gw;
+      U->set(metadata.versions[chosen]);
+      ++callsiteCount;
+      ++chosenHistogram[chosen];
+    }
+
+    errs() << "[ADAPTIVE-PCS] " << originalName << " winner=V" << gw
+           << " callsites=" << callsiteCount
+           << " non_callsite=" << nonCallsiteCount
+           << " hist=[V0=" << chosenHistogram[0]
+           << ",V1=" << chosenHistogram[1]
+           << ",V2=" << chosenHistogram[2]
+           << ",V3=" << chosenHistogram[3] << "]\n";
+
+    // DCE: erase variants that ended up with no callsite picking them.
+    // Keep Default (gw) since it bears the external symbol name.
     for (int i = 0; i < 4; i++) {
-      if (i != selectedVersion && metadata.versions[i]) {
-        metadata.versions[i]->replaceAllUsesWith(
-            UndefValue::get(metadata.versions[i]->getType()));
+      if (i == gw) continue;
+      if (metadata.versions[i] && metadata.versions[i]->use_empty()) {
         metadata.versions[i]->eraseFromParent();
+        metadata.versions[i] = nullptr;
       }
     }
     F->replaceAllUsesWith(UndefValue::get(F->getType()));
